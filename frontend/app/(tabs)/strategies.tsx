@@ -8,11 +8,14 @@ import {
   ActivityIndicator,
   Alert,
   Modal,
+  Dimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { TrendingUp, ShieldAlert, X, BarChart3 } from "lucide-react-native";
-import { api, session, type StrategyT } from "../../src/api";
-import { theme } from "../../src/theme";
+import { useRouter } from "expo-router";
+import { TrendingUp, ShieldAlert, X, BarChart3, Activity, LineChart } from "lucide-react-native";
+import { api, session, type StrategyT, type GreeksResultT, type PayoffResultT } from "../../src/api";
+import { theme, formatINR } from "../../src/theme";
+import PayoffChart from "../../src/components/PayoffChart";
 
 const CATS = ["All", "Bullish", "Bearish", "Neutral", "Volatile"] as const;
 type Cat = (typeof CATS)[number];
@@ -27,6 +30,7 @@ const catColor = (c: string) => {
 const SYMBOLS = ["NIFTY", "BANKNIFTY", "FINNIFTY"];
 
 export default function Strategies() {
+  const router = useRouter();
   const [strategies, setStrategies] = useState<StrategyT[]>([]);
   const [loading, setLoading] = useState(true);
   const [cat, setCat] = useState<Cat>("All");
@@ -34,6 +38,10 @@ export default function Strategies() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [lots, setLots] = useState(1);
   const [applying, setApplying] = useState(false);
+  const [greeks, setGreeks] = useState<GreeksResultT | null>(null);
+  const [payoff, setPayoff] = useState<PayoffResultT | null>(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const screenWidth = Dimensions.get("window").width;
 
   useEffect(() => {
     (async () => {
@@ -47,6 +55,36 @@ export default function Strategies() {
       }
     })();
   }, []);
+
+  // Load analysis when modal opens or symbol/lots change
+  useEffect(() => {
+    if (!selected) {
+      setGreeks(null);
+      setPayoff(null);
+      return;
+    }
+    let cancelled = false;
+    setAnalysisLoading(true);
+    (async () => {
+      try {
+        const [g, p] = await Promise.all([
+          api.greeks(selected.id, symbol, lots),
+          api.payoff(selected.id, symbol, lots),
+        ]);
+        if (!cancelled) {
+          setGreeks(g);
+          setPayoff(p);
+        }
+      } catch (e) {
+        // silent — modal still works for trade placement
+      } finally {
+        if (!cancelled) setAnalysisLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, symbol, lots]);
 
   const filtered =
     cat === "All" ? strategies : strategies.filter((s) => s.category === cat);
@@ -68,6 +106,14 @@ export default function Strategies() {
     } finally {
       setApplying(false);
     }
+  };
+
+  const openBacktest = () => {
+    if (!selected) return;
+    const sid = selected.id;
+    const sym = symbol;
+    setSelected(null);
+    setTimeout(() => router.push({ pathname: "/backtest", params: { strategyId: sid, symbol: sym } }), 100);
   };
 
   return (
@@ -171,6 +217,64 @@ export default function Strategies() {
 
                 <Text style={styles.modalDesc}>{selected.description}</Text>
 
+                {/* Payoff Diagram */}
+                {payoff && (
+                  <View style={styles.payoffWrap}>
+                    <View style={styles.payoffHead}>
+                      <Text style={styles.modalSectionLabel}>PAYOFF AT EXPIRY</Text>
+                      {payoff.breakevens.length > 0 && (
+                        <Text style={styles.payoffBe}>
+                          BE: {payoff.breakevens.map((b) => `₹${b.toFixed(0)}`).join(", ")}
+                        </Text>
+                      )}
+                    </View>
+                    <PayoffChart
+                      points={payoff.points}
+                      breakevens={payoff.breakevens}
+                      currentSpot={payoff.snapshot.spot}
+                      width={screenWidth - 80}
+                      height={180}
+                    />
+                    <View style={styles.payoffStats}>
+                      <View style={styles.payoffStat}>
+                        <Text style={styles.payoffStatLabel}>Max Profit</Text>
+                        <Text style={[styles.payoffStatValue, { color: theme.colors.profit }]}>
+                          {formatINR(payoff.max_profit)}
+                        </Text>
+                      </View>
+                      <View style={styles.payoffStat}>
+                        <Text style={styles.payoffStatLabel}>Max Loss</Text>
+                        <Text style={[styles.payoffStatValue, { color: theme.colors.loss }]}>
+                          {formatINR(payoff.max_loss)}
+                        </Text>
+                      </View>
+                      <View style={styles.payoffStat}>
+                        <Text style={styles.payoffStatLabel}>Spot</Text>
+                        <Text style={styles.payoffStatValue}>
+                          ₹{payoff.snapshot.spot.toLocaleString("en-IN")}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                )}
+
+                {/* Greeks */}
+                {greeks && (
+                  <View>
+                    <Text style={styles.modalSectionLabel}>NET GREEKS</Text>
+                    <View style={styles.greeksRow}>
+                      <GreekBox label="Δ Delta" value={greeks.net.delta.toFixed(2)} hint="Directional risk" />
+                      <GreekBox label="Γ Gamma" value={greeks.net.gamma.toFixed(4)} hint="Delta change" />
+                      <GreekBox label="Θ Theta" value={greeks.net.theta.toFixed(0)} hint="₹/day decay" />
+                      <GreekBox label="V Vega" value={greeks.net.vega.toFixed(0)} hint="₹/1% IV" />
+                    </View>
+                  </View>
+                )}
+
+                {analysisLoading && (
+                  <ActivityIndicator color={theme.colors.brand} style={{ marginTop: 12 }} />
+                )}
+
                 <Text style={styles.modalSectionLabel}>STRUCTURE</Text>
                 {selected.legs.map((l, i) => (
                   <View key={i} style={styles.legRow}>
@@ -233,6 +337,15 @@ export default function Strategies() {
                     <Text style={styles.applyBtnText}>Place Paper Trade</Text>
                   )}
                 </TouchableOpacity>
+
+                <TouchableOpacity
+                  testID="open-backtest-btn"
+                  style={styles.backtestBtn}
+                  onPress={openBacktest}
+                >
+                  <LineChart size={16} color={theme.colors.accent} />
+                  <Text style={styles.backtestBtnText}>Backtest on 1Y History</Text>
+                </TouchableOpacity>
               </ScrollView>
             )}
           </View>
@@ -249,6 +362,14 @@ const Meta = ({ icon, label, value }: { icon: React.ReactNode; label: string; va
       <Text style={styles.metaLabel}>{label}</Text>
       <Text style={styles.metaValue} numberOfLines={1}>{value}</Text>
     </View>
+  </View>
+);
+
+const GreekBox = ({ label, value, hint }: { label: string; value: string; hint: string }) => (
+  <View style={styles.greekBox}>
+    <Text style={styles.greekLabel}>{label}</Text>
+    <Text style={styles.greekValue}>{value}</Text>
+    <Text style={styles.greekHint}>{hint}</Text>
   </View>
 );
 
@@ -360,4 +481,52 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   applyBtnText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+  backtestBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: "rgba(245,158,11,0.08)",
+    borderWidth: 1,
+    borderColor: theme.colors.accent,
+  },
+  backtestBtnText: { color: theme.colors.accent, fontSize: 14, fontWeight: "700" },
+  payoffWrap: { marginTop: 16 },
+  payoffHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
+  payoffBe: { color: theme.colors.accent, fontSize: 11, fontWeight: "600" },
+  payoffStats: { flexDirection: "row", gap: 8, marginTop: 10 },
+  payoffStat: {
+    flex: 1,
+    backgroundColor: theme.colors.bg,
+    borderRadius: 10,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+  },
+  payoffStatLabel: { color: theme.colors.textTertiary, fontSize: 10, letterSpacing: 0.4 },
+  payoffStatValue: { color: theme.colors.textPrimary, fontSize: 13, fontWeight: "700", marginTop: 2 },
+  greeksRow: { flexDirection: "row", gap: 8 },
+  greekBox: {
+    flex: 1,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    backgroundColor: theme.colors.bg,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+  },
+  greekLabel: { color: theme.colors.textSecondary, fontSize: 11, fontWeight: "600" },
+  greekValue: {
+    color: theme.colors.textPrimary,
+    fontSize: 16,
+    fontWeight: "800",
+    marginTop: 6,
+    fontFamily: "Courier",
+  },
+  greekHint: { color: theme.colors.textTertiary, fontSize: 9, marginTop: 4, letterSpacing: 0.3 },
 });

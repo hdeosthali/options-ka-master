@@ -27,7 +27,6 @@ const PRO_BENEFITS = [
 export default function Profile() {
   const router = useRouter();
   const [user, setUser] = useState<UserT | null>(null);
-  const [upgrading, setUpgrading] = useState(false);
 
   const load = useCallback(async () => {
     const u = await session.get();
@@ -45,21 +44,8 @@ export default function Profile() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
-  const upgrade = async () => {
-    if (!user) return;
-    setUpgrading(true);
-    try {
-      const u = await api.upgrade(user.username);
-      setUser(u);
-      Alert.alert(
-        "Welcome to PRO",
-        "Your virtual capital is now ₹10,00,000 with 30 days of Pro access."
-      );
-    } catch (e: any) {
-      Alert.alert("Error", e.message);
-    } finally {
-      setUpgrading(false);
-    }
+  const upgrade = () => {
+    router.push("/payment");
   };
 
   const logout = async () => {
@@ -137,7 +123,7 @@ export default function Profile() {
                 <Text style={styles.proBadgeText}>OPTIONS MASTER PRO</Text>
               </View>
               <Text style={styles.proTitle}>Unlock 10x{"\n"}your virtual capital</Text>
-              <Text style={styles.proPrice}>₹0 / 30 days · Free preview</Text>
+              <Text style={styles.proPrice}>₹999 / 30 days · Razorpay secure</Text>
 
               <View style={styles.benefits}>
                 {PRO_BENEFITS.map((b, i) => (
@@ -152,13 +138,8 @@ export default function Profile() {
                 testID="upgrade-pro-btn"
                 style={styles.upgradeBtn}
                 onPress={upgrade}
-                disabled={upgrading}
               >
-                {upgrading ? (
-                  <ActivityIndicator color="#000" />
-                ) : (
-                  <Text style={styles.upgradeBtnText}>Activate Pro</Text>
-                )}
+                <Text style={styles.upgradeBtnText}>Pay ₹999 with Razorpay</Text>
               </TouchableOpacity>
             </View>
           </View>

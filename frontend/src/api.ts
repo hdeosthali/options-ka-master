@@ -44,6 +44,44 @@ export const api = {
   closeTrade: (username: string, trade_id: string) =>
     request<TradeT>("/trades/close", { method: "POST", body: JSON.stringify({ username, trade_id }) }),
   portfolio: (username: string) => request<PortfolioT>(`/portfolio/${username}`),
+  greeks: (strategy_id: string, symbol: string, lots: number) =>
+    request<GreeksResultT>("/greeks", {
+      method: "POST",
+      body: JSON.stringify({ strategy_id, symbol, lots }),
+    }),
+  payoff: (strategy_id: string, symbol: string, lots: number) =>
+    request<PayoffResultT>("/payoff", {
+      method: "POST",
+      body: JSON.stringify({ strategy_id, symbol, lots }),
+    }),
+  backtest: (params: BacktestParamsT) =>
+    request<BacktestResultT>("/backtest", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+  paymentsConfig: () =>
+    request<{ key_id: string; amount_paise: number; currency: string }>("/payments/config"),
+  createOrder: (username: string) =>
+    request<{ order_id: string; amount: number; currency: string; key_id: string }>("/payments/create-order", {
+      method: "POST",
+      body: JSON.stringify({ username }),
+    }),
+  verifyPayment: (
+    username: string,
+    razorpay_order_id: string,
+    razorpay_payment_id: string,
+    razorpay_signature: string,
+  ) =>
+    request<{ verified: boolean; user: UserT }>("/payments/verify", {
+      method: "POST",
+      body: JSON.stringify({
+        username,
+        razorpay_order_id,
+        razorpay_payment_id,
+        razorpay_signature,
+      }),
+    }),
+  checkoutUrl: (order_id: string) => `${API}/payments/checkout/${order_id}`,
 };
 
 // ---- Session ----
@@ -137,4 +175,78 @@ export type PortfolioT = {
   closed_count: number;
   win_rate: number;
   total_value: number;
+};
+
+export type GreeksValuesT = {
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+};
+
+export type GreeksLegT = {
+  action: string;
+  type: string;
+  strike: number;
+  qty: number;
+  price: number;
+  per_unit: GreeksValuesT;
+  contribution: GreeksValuesT;
+};
+
+export type GreeksResultT = {
+  snapshot: MarketSnapshotT;
+  strategy: { id: string; name: string };
+  legs: GreeksLegT[];
+  net: GreeksValuesT;
+};
+
+export type PayoffPointT = { spot: number; pnl: number };
+
+export type PayoffResultT = {
+  snapshot: MarketSnapshotT;
+  atm: number;
+  legs: { action: string; type: string; strike: number; entry_price: number; qty: number }[];
+  points: PayoffPointT[];
+  max_profit: number;
+  max_loss: number;
+  breakevens: number[];
+};
+
+export type BacktestParamsT = {
+  symbol: string;
+  strategy_id: string;
+  lots: number;
+  entry_rule: "WEEKLY_MONDAY" | "DAILY";
+  exit_rule: "EXPIRY_5D" | "TARGET_SL";
+  target_pct?: number;
+  stoploss_pct?: number;
+  days?: number;
+};
+
+export type BacktestTradeT = {
+  entry_date: string;
+  exit_date: string;
+  entry_spot: number;
+  exit_spot: number;
+  pnl: number;
+};
+
+export type BacktestResultT = {
+  symbol: string;
+  strategy_id: string;
+  strategy_name: string;
+  params: BacktestParamsT;
+  stats: {
+    total_trades: number;
+    wins: number;
+    losses: number;
+    win_rate: number;
+    avg_win: number;
+    avg_loss: number;
+    total_pnl: number;
+    max_drawdown: number;
+  };
+  trades: BacktestTradeT[];
+  equity_curve: { date: string; equity: number }[];
 };

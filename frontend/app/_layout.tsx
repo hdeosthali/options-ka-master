@@ -9,6 +9,8 @@ export default function RootLayout() {
       <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#09090B" } }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="backtest" />
+        <Stack.Screen name="payment" options={{ presentation: "modal" }} />
       </Stack>
     </SafeAreaProvider>
   );

@@ -1,4 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException
+from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -7,10 +8,13 @@ import logging
 import random
 import math
 import uuid
+import hmac
+import hashlib
 from pathlib import Path
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
+import razorpay
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -164,14 +168,61 @@ def get_market_snapshot(symbol: str) -> Dict[str, Any]:
     }
 
 
+def _norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2)))
+
+
+def _norm_pdf(x: float) -> float:
+    return math.exp(-0.5 * x * x) / math.sqrt(2 * math.pi)
+
+
+RISK_FREE_RATE = 0.07  # India RBI repo approx
+
+
 def black_scholes_price(spot: float, strike: float, iv_pct: float, days: int, opt_type: str) -> float:
-    # Simplified pricing for mock — not financially accurate but stable.
+    """Proper Black-Scholes pricing so OTM/ITM strikes price correctly."""
     t = max(days, 1) / 365.0
-    sigma = max(iv_pct, 5.0) / 100.0
-    moneyness = (spot - strike) if opt_type == "CE" else (strike - spot)
-    intrinsic = max(moneyness, 0.0)
-    time_value = spot * sigma * math.sqrt(t) * 0.4
-    return round(max(intrinsic + time_value, 0.5), 2)
+    sigma = max(iv_pct, 1.0) / 100.0
+    r = RISK_FREE_RATE
+    if spot <= 0 or strike <= 0:
+        return 0.5
+    if opt_type == "FUT":
+        return round(spot, 2)
+    d1 = (math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    d2 = d1 - sigma * math.sqrt(t)
+    if opt_type == "CE":
+        price = spot * _norm_cdf(d1) - strike * math.exp(-r * t) * _norm_cdf(d2)
+    else:  # PE
+        price = strike * math.exp(-r * t) * _norm_cdf(-d2) - spot * _norm_cdf(-d1)
+    return round(max(price, 0.5), 2)
+
+
+def bs_greeks(spot: float, strike: float, iv_pct: float, days: int, opt_type: str) -> Dict[str, float]:
+    """Full Black-Scholes Greeks. Theta is per-day, Vega per 1% IV change."""
+    t = max(days, 1) / 365.0
+    sigma = max(iv_pct, 1.0) / 100.0
+    r = RISK_FREE_RATE
+    if spot <= 0 or strike <= 0:
+        return {"delta": 0, "gamma": 0, "theta": 0, "vega": 0}
+    d1 = (math.log(spot / strike) + (r + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    d2 = d1 - sigma * math.sqrt(t)
+    pdf_d1 = _norm_pdf(d1)
+    if opt_type == "CE":
+        delta = _norm_cdf(d1)
+        theta = (-spot * pdf_d1 * sigma / (2 * math.sqrt(t))
+                 - r * strike * math.exp(-r * t) * _norm_cdf(d2)) / 365.0
+    else:  # PE
+        delta = _norm_cdf(d1) - 1.0
+        theta = (-spot * pdf_d1 * sigma / (2 * math.sqrt(t))
+                 + r * strike * math.exp(-r * t) * _norm_cdf(-d2)) / 365.0
+    gamma = pdf_d1 / (spot * sigma * math.sqrt(t))
+    vega = spot * pdf_d1 * math.sqrt(t) / 100.0
+    return {
+        "delta": round(delta, 4),
+        "gamma": round(gamma, 6),
+        "theta": round(theta, 2),
+        "vega": round(vega, 2),
+    }
 
 
 def get_option_chain(symbol: str, num_strikes: int = 11) -> Dict[str, Any]:
@@ -604,7 +655,475 @@ async def portfolio(username: str):
     }
 
 
-# ---------------- App wiring ----------------
+# ---------------- Greeks ----------------
+class GreeksIn(BaseModel):
+    symbol: str = "NIFTY"
+    strategy_id: str
+    lots: int = 1
+
+
+@api.post("/greeks")
+async def greeks_for_strategy(payload: GreeksIn):
+    strategy = next((s for s in STRATEGIES if s["id"] == payload.strategy_id), None)
+    if not strategy:
+        raise HTTPException(404, "Strategy not found")
+    symbol = payload.symbol.upper()
+    if symbol not in INSTRUMENTS:
+        raise HTTPException(404, "Symbol not supported")
+    chain = get_option_chain(symbol)
+    snap = chain["snapshot"]
+    atm = chain["atm"]
+    step = snap["step"]
+    lot_size = snap["lot"]
+    qty = max(payload.lots, 1) * lot_size
+
+    legs_out = []
+    net = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+    for leg in strategy["legs"]:
+        strike = int(atm + leg["offset"] * step)
+        sign = 1 if leg["action"] == "BUY" else -1
+        if leg["type"] == "FUT":
+            # Futures: delta=1, others 0
+            g = {"delta": 1.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0}
+            price = snap["spot"]
+        else:
+            g = bs_greeks(snap["spot"], strike, snap["iv"], chain["expiry_days"], leg["type"])
+            price = black_scholes_price(snap["spot"], strike, snap["iv"], chain["expiry_days"], leg["type"])
+        contribution = {
+            "delta": round(g["delta"] * sign * qty, 2),
+            "gamma": round(g["gamma"] * sign * qty, 4),
+            "theta": round(g["theta"] * sign * qty, 2),
+            "vega": round(g["vega"] * sign * qty, 2),
+        }
+        for k in net:
+            net[k] += contribution[k]
+        legs_out.append({
+            "action": leg["action"],
+            "type": leg["type"],
+            "strike": strike,
+            "qty": qty,
+            "price": price,
+            "per_unit": g,
+            "contribution": contribution,
+        })
+    return {
+        "snapshot": snap,
+        "strategy": {"id": strategy["id"], "name": strategy["name"]},
+        "legs": legs_out,
+        "net": {k: round(v, 4) for k, v in net.items()},
+    }
+
+
+# ---------------- Payoff Diagram ----------------
+def leg_payoff_at_expiry(action: str, opt_type: str, strike: int, entry_price: float, qty: int, spot_at_expiry: float) -> float:
+    if opt_type == "FUT":
+        intrinsic = spot_at_expiry - entry_price
+    elif opt_type == "CE":
+        intrinsic = max(spot_at_expiry - strike, 0) - entry_price
+    else:  # PE
+        intrinsic = max(strike - spot_at_expiry, 0) - entry_price
+    sign = 1 if action == "BUY" else -1
+    return intrinsic * sign * qty
+
+
+@api.post("/payoff")
+async def payoff(payload: GreeksIn):
+    strategy = next((s for s in STRATEGIES if s["id"] == payload.strategy_id), None)
+    if not strategy:
+        raise HTTPException(404, "Strategy not found")
+    symbol = payload.symbol.upper()
+    if symbol not in INSTRUMENTS:
+        raise HTTPException(404, "Symbol not supported")
+    chain = get_option_chain(symbol)
+    snap = chain["snapshot"]
+    atm = chain["atm"]
+    step = snap["step"]
+    qty = max(payload.lots, 1) * snap["lot"]
+
+    legs_built = []
+    for leg in strategy["legs"]:
+        strike = int(atm + leg["offset"] * step)
+        if leg["type"] == "FUT":
+            price = snap["spot"]
+        else:
+            price = black_scholes_price(snap["spot"], strike, snap["iv"], chain["expiry_days"], leg["type"])
+        legs_built.append({
+            "action": leg["action"],
+            "type": leg["type"],
+            "strike": strike,
+            "entry_price": price,
+            "qty": qty,
+        })
+
+    # Compute payoff across +/- 10% from spot in 41 points
+    points = []
+    low = snap["spot"] * 0.90
+    high = snap["spot"] * 1.10
+    npoints = 41
+    max_profit = float("-inf")
+    max_loss = float("inf")
+    breakevens: List[float] = []
+    prev_pnl = None
+    for i in range(npoints):
+        s = low + (high - low) * (i / (npoints - 1))
+        pnl = 0.0
+        for l in legs_built:
+            pnl += leg_payoff_at_expiry(l["action"], l["type"], l["strike"], l["entry_price"], l["qty"], s)
+        pnl = round(pnl, 2)
+        if pnl > max_profit:
+            max_profit = pnl
+        if pnl < max_loss:
+            max_loss = pnl
+        if prev_pnl is not None and ((prev_pnl <= 0 <= pnl) or (prev_pnl >= 0 >= pnl)):
+            # linear interpolate breakeven
+            prev_s = points[-1]["spot"]
+            if pnl != prev_pnl:
+                be = prev_s + (s - prev_s) * (0 - prev_pnl) / (pnl - prev_pnl)
+                breakevens.append(round(be, 2))
+        points.append({"spot": round(s, 2), "pnl": pnl})
+        prev_pnl = pnl
+
+    return {
+        "snapshot": snap,
+        "atm": atm,
+        "legs": legs_built,
+        "points": points,
+        "max_profit": max_profit if max_profit > float("-inf") else 0,
+        "max_loss": max_loss if max_loss < float("inf") else 0,
+        "breakevens": breakevens,
+    }
+
+
+# ---------------- Back-tester ----------------
+def historical_series(symbol: str, days: int = 252) -> List[Dict[str, Any]]:
+    """Deterministic synthetic 1-year daily OHLC + IV series."""
+    inst = INSTRUMENTS[symbol]
+    rng = random.Random(abs(hash(f"hist-{symbol}")) % (2**32))
+    series = []
+    price = inst["base"] * 0.92  # start ~8% below current base
+    iv = 14.0
+    end = datetime.now(timezone.utc).date() - timedelta(days=1)
+    for i in range(days):
+        d = end - timedelta(days=(days - 1 - i))
+        if d.weekday() >= 5:  # skip weekends
+            continue
+        ret = rng.gauss(0.0005, 0.011)  # mean ~12% annual, vol ~17% annual
+        price = max(price * (1 + ret), inst["base"] * 0.5)
+        iv = max(8.0, min(35.0, iv + rng.gauss(0, 0.6)))
+        series.append({
+            "date": d.isoformat(),
+            "close": round(price, 2),
+            "iv": round(iv, 2),
+        })
+    return series
+
+
+class BacktestIn(BaseModel):
+    symbol: str = "NIFTY"
+    strategy_id: str
+    lots: int = 1
+    entry_rule: str = "WEEKLY_MONDAY"  # WEEKLY_MONDAY | DAILY
+    exit_rule: str = "EXPIRY_5D"        # EXPIRY_5D | TARGET_SL
+    target_pct: float = 30.0            # % of max profit at entry credit
+    stoploss_pct: float = 50.0          # % of max loss
+    days: int = 252
+
+
+@api.post("/backtest")
+async def backtest(payload: BacktestIn):
+    strategy = next((s for s in STRATEGIES if s["id"] == payload.strategy_id), None)
+    if not strategy:
+        raise HTTPException(404, "Strategy not found")
+    symbol = payload.symbol.upper()
+    if symbol not in INSTRUMENTS:
+        raise HTTPException(404, "Symbol not supported")
+    inst = INSTRUMENTS[symbol]
+    series = historical_series(symbol, max(60, min(payload.days, 500)))
+    lot_size = inst["lot"]
+    step = inst["step"]
+    qty = max(payload.lots, 1) * lot_size
+
+    trades = []
+    equity_curve = []
+    cum_pnl = 0.0
+    i = 0
+    while i < len(series):
+        day = series[i]
+        # entry rule
+        d_obj = datetime.fromisoformat(day["date"]).date()
+        is_entry = (payload.entry_rule == "WEEKLY_MONDAY" and d_obj.weekday() == 0) or \
+                   (payload.entry_rule == "DAILY")
+        if not is_entry:
+            equity_curve.append({"date": day["date"], "equity": round(cum_pnl, 2)})
+            i += 1
+            continue
+
+        entry_spot = day["close"]
+        entry_iv = day["iv"]
+        atm = round_strike(entry_spot, step)
+        entry_legs = []
+        entry_credit = 0.0  # net premium received (positive = credit strategy)
+        for leg in strategy["legs"]:
+            strike = atm + leg["offset"] * step
+            if leg["type"] == "FUT":
+                price = entry_spot
+            else:
+                price = black_scholes_price(entry_spot, strike, entry_iv, 5, leg["type"])
+            entry_legs.append({**leg, "strike": strike, "price": price})
+            entry_credit += (price if leg["action"] == "SELL" else -price) * qty
+
+        # Exit
+        exit_day_idx = min(i + 5, len(series) - 1)  # default 5 trading days
+        exit_pnl = None
+        exit_date = series[exit_day_idx]["date"]
+        for j in range(i + 1, min(i + 6, len(series))):
+            s = series[j]
+            pnl = 0.0
+            for l in entry_legs:
+                if l["type"] == "FUT":
+                    intrinsic = s["close"] - l["price"]
+                elif l["type"] == "CE":
+                    intrinsic = max(s["close"] - l["strike"], 0) - l["price"]
+                else:
+                    intrinsic = max(l["strike"] - s["close"], 0) - l["price"]
+                sign = 1 if l["action"] == "BUY" else -1
+                pnl += intrinsic * sign * qty
+            if payload.exit_rule == "TARGET_SL":
+                if entry_credit > 0:
+                    target = entry_credit * payload.target_pct / 100.0
+                    sl = -entry_credit * payload.stoploss_pct / 100.0
+                else:
+                    debit = -entry_credit
+                    target = debit * payload.target_pct / 100.0
+                    sl = -debit * payload.stoploss_pct / 100.0
+                if pnl >= target or pnl <= sl:
+                    exit_pnl = pnl
+                    exit_day_idx = j
+                    exit_date = s["date"]
+                    break
+            # else default: hold to expiry day
+        if exit_pnl is None:
+            s = series[exit_day_idx]
+            pnl = 0.0
+            for l in entry_legs:
+                if l["type"] == "FUT":
+                    intrinsic = s["close"] - l["price"]
+                elif l["type"] == "CE":
+                    intrinsic = max(s["close"] - l["strike"], 0) - l["price"]
+                else:
+                    intrinsic = max(l["strike"] - s["close"], 0) - l["price"]
+                sign = 1 if l["action"] == "BUY" else -1
+                pnl += intrinsic * sign * qty
+            exit_pnl = pnl
+            exit_date = s["date"]
+
+        cum_pnl += exit_pnl
+        trades.append({
+            "entry_date": day["date"],
+            "exit_date": exit_date,
+            "entry_spot": entry_spot,
+            "exit_spot": series[exit_day_idx]["close"],
+            "pnl": round(exit_pnl, 2),
+        })
+        equity_curve.append({"date": day["date"], "equity": round(cum_pnl, 2)})
+        i = exit_day_idx + 1
+
+    # Stats
+    total = len(trades)
+    wins = sum(1 for t in trades if t["pnl"] > 0)
+    losses = total - wins
+    win_rate = round((wins / total) * 100, 1) if total else 0.0
+    avg_win = round(sum(t["pnl"] for t in trades if t["pnl"] > 0) / wins, 2) if wins else 0.0
+    avg_loss = round(sum(t["pnl"] for t in trades if t["pnl"] <= 0) / losses, 2) if losses else 0.0
+    max_drawdown = 0.0
+    peak = 0.0
+    for p in equity_curve:
+        if p["equity"] > peak:
+            peak = p["equity"]
+        dd = p["equity"] - peak
+        if dd < max_drawdown:
+            max_drawdown = dd
+
+    return {
+        "symbol": symbol,
+        "strategy_id": strategy["id"],
+        "strategy_name": strategy["name"],
+        "params": payload.model_dump(),
+        "stats": {
+            "total_trades": total,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "total_pnl": round(cum_pnl, 2),
+            "max_drawdown": round(max_drawdown, 2),
+        },
+        "trades": trades,
+        "equity_curve": equity_curve,
+    }
+
+
+# ---------------- Razorpay Payments ----------------
+RAZORPAY_KEY_ID = os.environ.get("RAZORPAY_KEY_ID", "")
+RAZORPAY_KEY_SECRET = os.environ.get("RAZORPAY_KEY_SECRET", "")
+PRO_PRICE_PAISE = 99900  # ₹999
+
+try:
+    razor_client = razorpay.Client(auth=(RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET))
+except Exception as _e:
+    razor_client = None
+    logger.warning(f"Razorpay client init failed: {_e}")
+
+
+class CreateOrderIn(BaseModel):
+    username: str
+
+
+class VerifyPaymentIn(BaseModel):
+    username: str
+    razorpay_order_id: str
+    razorpay_payment_id: str
+    razorpay_signature: str
+
+
+@api.get("/payments/config")
+async def payments_config():
+    return {"key_id": RAZORPAY_KEY_ID, "amount_paise": PRO_PRICE_PAISE, "currency": "INR"}
+
+
+@api.post("/payments/create-order")
+async def create_order(payload: CreateOrderIn):
+    if not razor_client:
+        raise HTTPException(500, "Razorpay not configured")
+    username = payload.username.lower()
+    user = await db.users.find_one({"username": username}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    receipt = f"pro-{username[:12]}-{int(datetime.now(timezone.utc).timestamp())}"[:40]
+    order = razor_client.order.create({
+        "amount": PRO_PRICE_PAISE,
+        "currency": "INR",
+        "receipt": receipt,
+        "notes": {"username": username, "plan": "PRO_30_DAYS"},
+    })
+    await db.payment_orders.insert_one({
+        "order_id": order["id"],
+        "username": username,
+        "amount": PRO_PRICE_PAISE,
+        "status": "CREATED",
+        "created_at": now_iso(),
+    })
+    return {"order_id": order["id"], "amount": PRO_PRICE_PAISE, "currency": "INR", "key_id": RAZORPAY_KEY_ID}
+
+
+@api.post("/payments/verify")
+async def verify_payment(payload: VerifyPaymentIn):
+    if not RAZORPAY_KEY_SECRET:
+        raise HTTPException(500, "Razorpay not configured")
+    body = f"{payload.razorpay_order_id}|{payload.razorpay_payment_id}".encode()
+    expected = hmac.new(RAZORPAY_KEY_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, payload.razorpay_signature):
+        await db.payment_orders.update_one(
+            {"order_id": payload.razorpay_order_id},
+            {"$set": {"status": "FAILED_VERIFY"}},
+        )
+        raise HTTPException(400, "Invalid payment signature")
+
+    username = payload.username.lower()
+    user = await db.users.find_one({"username": username}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+
+    await db.payment_orders.update_one(
+        {"order_id": payload.razorpay_order_id},
+        {"$set": {
+            "status": "PAID",
+            "payment_id": payload.razorpay_payment_id,
+            "paid_at": now_iso(),
+        }},
+    )
+
+    updates = {
+        "is_pro": True,
+        "pro_days_left": 30,
+        "capital": max(user.get("capital", 0), 1000000.0),
+        "badges": list(set(user.get("badges", []) + ["Pro Member"])),
+    }
+    await update_user(username, updates)
+    user.update(updates)
+    return {"verified": True, "user": user}
+
+
+@api.get("/payments/checkout/{order_id}", response_class=HTMLResponse)
+async def checkout_page(order_id: str):
+    """Hosted HTML page that loads Razorpay checkout in the WebView.
+    On payment success/failure/dismiss, posts a JSON message back to React Native via window.ReactNativeWebView.postMessage."""
+    order = await db.payment_orders.find_one({"order_id": order_id}, {"_id": 0})
+    if not order:
+        raise HTTPException(404, "Order not found")
+    username = order["username"]
+    amount = order["amount"]
+    key_id = RAZORPAY_KEY_ID
+    html = f"""
+<!doctype html>
+<html><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Options Master · Pro</title>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<style>
+  body {{ background: #09090B; color:#FAFAFA; font-family: -apple-system, system-ui, sans-serif; margin:0; padding:24px; min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center; }}
+  .card {{ background:#18181B; padding:24px; border-radius:16px; border:1px solid #27272A; max-width:340px; width:100%; text-align:center; }}
+  h1 {{ font-size:22px; margin:0 0 8px; }}
+  p {{ color:#A1A1AA; font-size:14px; line-height:20px; margin:0 0 16px; }}
+  .price {{ font-size:32px; font-weight:800; color:#F59E0B; margin:8px 0 12px; }}
+  button {{ background:#F59E0B; color:#000; border:none; padding:14px 24px; border-radius:12px; font-weight:700; font-size:15px; width:100%; cursor:pointer; }}
+  button:disabled {{ opacity:0.5; }}
+  .status {{ margin-top:16px; font-size:13px; color:#A1A1AA; }}
+</style>
+</head><body>
+<div class="card">
+  <h1>Options Master Pro</h1>
+  <p>30 days of premium access · ₹10L virtual capital</p>
+  <div class="price">₹999</div>
+  <button id="pay">Pay with Razorpay</button>
+  <div class="status" id="status"></div>
+</div>
+<script>
+  const post = (m) => {{
+    try {{ window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(m)); }} catch(e) {{}}
+  }};
+  const setStatus = (t) => document.getElementById('status').textContent = t;
+  document.getElementById('pay').addEventListener('click', function() {{
+    var options = {{
+      key: "{key_id}",
+      amount: {amount},
+      currency: "INR",
+      name: "Options Master",
+      description: "Pro · 30 Days",
+      order_id: "{order_id}",
+      prefill: {{ name: "{username}", email: "{username}@optionsmaster.app", contact: "9000000000" }},
+      theme: {{ color: "#F59E0B" }},
+      handler: function (response) {{
+        setStatus('Verifying payment...');
+        post({{ type: 'success', data: response }});
+      }},
+      modal: {{
+        ondismiss: function() {{ post({{ type: 'dismissed' }}); }}
+      }}
+    }};
+    var rzp = new Razorpay(options);
+    rzp.on('payment.failed', function (resp) {{ post({{ type: 'failed', data: resp.error }}); }});
+    rzp.open();
+  }});
+</script>
+</body></html>
+"""
+    return HTMLResponse(content=html)
+
+
+
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,
