@@ -1338,26 +1338,52 @@ async def create_subscription(payload: CreateSubIn):
     user = await db.users.find_one({"username": username}, {"_id": 0})
     if not user:
         raise HTTPException(404, "User not found")
-    plan = await get_or_create_pro_plan()
-    sub = razor_client.subscription.create({
-        "plan_id": plan["plan_id"],
-        "total_count": 12,  # 12 months
-        "customer_notify": 1,
-        "notes": {"username": username},
-    })
-    await db.subscriptions.insert_one({
-        "subscription_id": sub["id"],
-        "username": username,
-        "plan_id": plan["plan_id"],
-        "status": sub.get("status", "created"),
-        "created_at": now_iso(),
-    })
-    return {
-        "subscription_id": sub["id"],
-        "plan_id": plan["plan_id"],
-        "key_id": RAZORPAY_KEY_ID,
-        "amount_paise": PRO_PRICE_PAISE,
-    }
+
+    # Try real Razorpay subscription; fall back to a simulated subscription if the test key
+    # lacks Plans/Subscriptions scope (common for free Razorpay test accounts).
+    try:
+        plan = await get_or_create_pro_plan()
+        sub = razor_client.subscription.create({
+            "plan_id": plan["plan_id"],
+            "total_count": 12,
+            "customer_notify": 1,
+            "notes": {"username": username},
+        })
+        await db.subscriptions.insert_one({
+            "subscription_id": sub["id"],
+            "username": username,
+            "plan_id": plan["plan_id"],
+            "status": sub.get("status", "created"),
+            "created_at": now_iso(),
+            "simulated": False,
+        })
+        return {
+            "subscription_id": sub["id"],
+            "plan_id": plan["plan_id"],
+            "key_id": RAZORPAY_KEY_ID,
+            "amount_paise": PRO_PRICE_PAISE,
+            "simulated": False,
+        }
+    except Exception as e:
+        logger.warning(f"Razorpay subscription create failed, using simulated: {e}")
+        sub_id = f"sub_SIM{uuid.uuid4().hex[:14]}"
+        plan_id = f"plan_SIM{uuid.uuid4().hex[:14]}"
+        await db.subscriptions.insert_one({
+            "subscription_id": sub_id,
+            "username": username,
+            "plan_id": plan_id,
+            "status": "created",
+            "created_at": now_iso(),
+            "simulated": True,
+            "note": "Razorpay test key lacks Plans/Subscriptions scope. Enable subscriptions on dashboard.razorpay.com → Subscriptions to use real subscriptions.",
+        })
+        return {
+            "subscription_id": sub_id,
+            "plan_id": plan_id,
+            "key_id": RAZORPAY_KEY_ID,
+            "amount_paise": PRO_PRICE_PAISE,
+            "simulated": True,
+        }
 
 
 @api.post("/payments/webhook")

@@ -34,7 +34,8 @@ export default function BacktestScreen() {
   const [strategy, setStrategy] = useState<StrategyT | null>(null);
   const [entry, setEntry] = useState<"WEEKLY_MONDAY" | "DAILY">("WEEKLY_MONDAY");
   const [exit, setExit] = useState<"EXPIRY_5D" | "TARGET_SL">("EXPIRY_5D");
-  const [result, setResult] = useState<BacktestResultT | null>(null);
+  const [source, setSource] = useState<"yfinance" | "synthetic">("yfinance");
+  const [result, setResult] = useState<(BacktestResultT & { source?: string }) | null>(null);
   const [running, setRunning] = useState(false);
 
   useEffect(() => {
