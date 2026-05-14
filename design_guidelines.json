@@ -1,0 +1,226 @@
+{
+  "theme": "DARK",
+  "archetype": "Archetype 4 (Swiss & High-Contrast) - Dark Mode Variant",
+  "typography": {
+    "fonts": {
+      "heading": "Manrope / IBM Plex Sans (Or standard React Native sans-serif bold)",
+      "body": "Inter / System Default",
+      "mono": "Roboto Mono / Courier (for numbers/tickers)"
+    },
+    "scale": {
+      "h1": {
+        "fontSize": 32,
+        "lineHeight": 40,
+        "letterSpacing": -0.5,
+        "fontWeight": "800"
+      },
+      "h2": {
+        "fontSize": 24,
+        "lineHeight": 32,
+        "letterSpacing": -0.3,
+        "fontWeight": "700"
+      },
+      "h3": {
+        "fontSize": 20,
+        "lineHeight": 28,
+        "letterSpacing": -0.2,
+        "fontWeight": "600"
+      },
+      "h4": {
+        "fontSize": 18,
+        "lineHeight": 26,
+        "fontWeight": "600"
+      },
+      "body": {
+        "fontSize": 16,
+        "lineHeight": 24,
+        "fontWeight": "400"
+      },
+      "small": {
+        "fontSize": 14,
+        "lineHeight": 20,
+        "fontWeight": "500"
+      },
+      "micro": {
+        "fontSize": 12,
+        "lineHeight": 16,
+        "fontWeight": "500",
+        "textTransform": "uppercase",
+        "letterSpacing": 0.5
+      }
+    }
+  },
+  "colors": {
+    "background": {
+      "base": "#09090B",
+      "surface": "#18181B",
+      "surface_elevated": "#27272A",
+      "overlay": "rgba(0,0,0,0.6)"
+    },
+    "text": {
+      "primary": "#FAFAFA",
+      "secondary": "#A1A1AA",
+      "tertiary": "#71717A"
+    },
+    "brand": {
+      "primary": "#2563EB",
+      "primary_hover": "#3B82F6",
+      "accent": "#F59E0B"
+    },
+    "semantic": {
+      "profit": "#10B981",
+      "profit_bg": "rgba(16, 185, 129, 0.1)",
+      "loss": "#EF4444",
+      "loss_bg": "rgba(239, 68, 68, 0.1)",
+      "warning": "#F59E0B",
+      "info": "#3B82F6",
+      "border": "#27272A"
+    }
+  },
+  "spacing": {
+    "2": 8,
+    "3": 12,
+    "4": 16,
+    "6": 24,
+    "8": 32,
+    "12": 48
+  },
+  "borderRadius": {
+    "sm": 4,
+    "md": 8,
+    "lg": 12,
+    "xl": 16,
+    "2xl": 24,
+    "full": 9999
+  },
+  "components": {
+    "card": {
+      "backgroundColor": "colors.background.surface",
+      "borderRadius": "borderRadius.xl",
+      "padding": "spacing.4",
+      "borderWidth": 1,
+      "borderColor": "colors.semantic.border"
+    },
+    "button": {
+      "primary": {
+        "backgroundColor": "colors.brand.primary",
+        "borderRadius": "borderRadius.lg",
+        "paddingVertical": "spacing.3",
+        "paddingHorizontal": "spacing.6",
+        "alignItems": "center"
+      },
+      "secondary": {
+        "backgroundColor": "transparent",
+        "borderWidth": 1,
+        "borderColor": "colors.semantic.border",
+        "borderRadius": "borderRadius.lg",
+        "paddingVertical": "spacing.3",
+        "paddingHorizontal": "spacing.6",
+        "alignItems": "center"
+      }
+    },
+    "bottom_tab_bar": {
+      "backgroundColor": "colors.background.surface",
+      "borderTopWidth": 1,
+      "borderTopColor": "colors.semantic.border",
+      "height": 60,
+      "paddingBottom": 8
+    },
+    "option_chain_row": {
+      "flexDirection": "row",
+      "justifyContent": "space-between",
+      "paddingVertical": "spacing.3",
+      "borderBottomWidth": 1,
+      "borderBottomColor": "colors.semantic.border"
+    }
+  },
+  "layouts": {
+    "screen_wrapper": {
+      "backgroundColor": "colors.background.base",
+      "flex": 1,
+      "paddingHorizontal": "spacing.4"
+    },
+    "hero_section": {
+      "alignItems": "center",
+      "paddingVertical": "spacing.8",
+      "borderBottomWidth": 1,
+      "borderColor": "colors.semantic.border"
+    },
+    "grid_bento": {
+      "flexDirection": "row",
+      "flexWrap": "wrap",
+      "justifyContent": "space-between",
+      "gap": "spacing.4"
+    }
+  },
+  "screens": {
+    "Home": {
+      "sections": [
+        "User Greeting & XP Level Badge",
+        "Portfolio Summary Card (Virtual Capital, P&L)",
+        "Market Status (Nifty/BankNifty Tickers)",
+        "AI Daily Strategy Recommendation Card"
+      ]
+    },
+    "StrategyHub": {
+      "sections": [
+        "Strategy Categories (Bullish, Bearish, Neutral)",
+        "Strategy List Cards (Payoff diagram, Risk/Reward ratio, Max Profit/Loss)"
+      ]
+    },
+    "OptionChain": {
+      "sections": [
+        "Header with Expiry Dropdown",
+        "Table Header (Calls | Strike | Puts)",
+        "Strike Grid (LTP, OI, Delta)"
+      ]
+    },
+    "Portfolio": {
+      "sections": [
+        "Live Mock P&L Graph",
+        "Active Positions List (Square Off Button)",
+        "Order History"
+      ]
+    },
+    "Profile": {
+      "sections": [
+        "User Avatar & Stats",
+        "Pro Upgrade Banner",
+        "Settings (Dark Mode, Notifications)"
+      ]
+    }
+  },
+  "media": {
+    "images": [
+      {
+        "category": "hero_empty_state",
+        "url": "https://images.unsplash.com/photo-1651341050677-24dba59ce0fd?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDk1ODF8MHwxfHNlYXJjaHwzfHxhYnN0cmFjdCUyMHN0b2NrJTIwbWFya2V0JTIwZ3JhcGglMjBkYXJrfGVufDB8fHx8MTc3ODczMzAzN3ww&ixlib=rb-4.1.0&q=85",
+        "description": "Abstract neon market graph for welcome screen or empty state backgrounds."
+      },
+      {
+        "category": "gamification_reward",
+        "url": "https://images.unsplash.com/photo-1704313097739-082bc2e8c945?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTB8MHwxfHNlYXJjaHwxfHx0cm9waHklMjBnb2xkJTIwM2R8ZW58MHx8fHwxNzc4NzMzMDU3fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Golden 3D trophy image for leveling up, streak milestones, or XP rewards."
+      },
+      {
+        "category": "pro_upgrade_banner",
+        "url": "https://images.unsplash.com/photo-1760902419069-466f6f82c8b2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwxfHxjcmVkaXQlMjBjYXJkJTIwYmxhY2slMjBwcmVtaXVtJTIwM2R8ZW58MHx8fHwxNzc4NzMzMDU3fDA&ixlib=rb-4.1.0&q=85",
+        "description": "Premium black and gold 3D abstract background for the Pro Upgrade screen banner."
+      }
+    ],
+    "icons": {
+      "library": "lucide-react-native",
+      "usage": "Use strokeWidth=2 for normal, strokeWidth=1.5 for large icons. No emojis."
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly adhere to the Dark Mode (Archetype 4) color palette. Do not use pure white or pure black. Use Zinc-based grays (#09090B, #18181B, #27272A).",
+    "Use color semantically: #10B981 for Profit (Calls, Up trends) and #EF4444 for Loss (Puts, Down trends).",
+    "In the Option Chain Viewer, ensure data density but maintain touch-friendly padding (min 44px height for rows).",
+    "For the Strategy Hub, use a card-based layout (`grid_bento` logic adapted for mobile) with subtle 1px borders (#27272A) instead of heavy drop shadows.",
+    "Implement bottom tab navigation using the `bottom_tab_bar` specs.",
+    "Add `data-testid` to all interactive elements for robust testing (e.g., `data-testid=\"square-off-button\"`).",
+    "Use the provided image URLs exactly as given; do not use placeholders like via.placeholder.com.",
+    "Ensure numbers (prices, P&L, IV) use tabular lining or a monospaced font if available to prevent jitter during real-time mock updates."
+  ]
+}
