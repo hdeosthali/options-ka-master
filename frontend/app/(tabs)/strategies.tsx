@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect, useRouter } from "expo-router";
-import { TrendingUp, ShieldAlert, X, BarChart3, Activity, LineChart } from "lucide-react-native";
+import { TrendingUp, ShieldAlert, X, BarChart3, Activity, LineChart, Store, Globe } from "lucide-react-native";
 import { api, session, type StrategyT, type GreeksResultT, type PayoffResultT } from "../../src/api";
 import { theme, formatINR } from "../../src/theme";
 import PayoffChart from "../../src/components/PayoffChart";
@@ -145,6 +145,14 @@ export default function Strategies() {
           <Text style={styles.title}>Strategy Hub</Text>
           <Text style={styles.subtitle}>{strategies.length} strategies · tap any to apply</Text>
         </View>
+        <TouchableOpacity
+          testID="open-market-btn"
+          style={styles.marketBtn}
+          onPress={() => router.push("/marketplace")}
+        >
+          <Store size={14} color={theme.colors.brand} />
+          <Text style={styles.marketBtnText}>Market</Text>
+        </TouchableOpacity>
         <TouchableOpacity
           testID="open-editor-btn"
           style={styles.newBtn}
@@ -384,6 +392,19 @@ export default function Strategies() {
                   <LineChart size={16} color={theme.colors.accent} />
                   <Text style={styles.backtestBtnText}>Backtest on 1Y History</Text>
                 </TouchableOpacity>
+
+                {(selected as any).is_custom && (
+                  <TouchableOpacity
+                    testID="toggle-publish-btn"
+                    style={styles.publishBtn}
+                    onPress={togglePublish}
+                  >
+                    <Globe size={16} color={theme.colors.brand} />
+                    <Text style={styles.publishBtnText}>
+                      {(selected as any).is_public ? "Unpublish from Marketplace" : "Publish to Marketplace"}
+                    </Text>
+                  </TouchableOpacity>
+                )}
               </ScrollView>
             )}
           </View>
@@ -423,6 +444,18 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   newBtnText: { color: "#fff", fontWeight: "700", fontSize: 13 },
+  marketBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    backgroundColor: "rgba(37,99,235,0.12)",
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: theme.colors.brand,
+  },
+  marketBtnText: { color: theme.colors.brand, fontWeight: "700", fontSize: 13 },
   customBadge: {
     backgroundColor: "rgba(245,158,11,0.15)",
     borderColor: theme.colors.accent,
@@ -548,6 +581,19 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.accent,
   },
   backtestBtnText: { color: theme.colors.accent, fontSize: 14, fontWeight: "700" },
+  publishBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: 10,
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: "rgba(37,99,235,0.10)",
+    borderWidth: 1,
+    borderColor: theme.colors.brand,
+  },
+  publishBtnText: { color: theme.colors.brand, fontSize: 13, fontWeight: "700" },
   payoffWrap: { marginTop: 16 },
   payoffHead: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
   payoffBe: { color: theme.colors.accent, fontSize: 11, fontWeight: "600" },
@@ -584,3 +630,4 @@ const styles = StyleSheet.create({
   },
   greekHint: { color: theme.colors.textTertiary, fontSize: 9, marginTop: 4, letterSpacing: 0.3 },
 });
+

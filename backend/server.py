@@ -1724,6 +1724,156 @@ async def ws_option_chain(websocket: WebSocket, symbol: str):
             pass
 
 
+# ---------------- Marketplace ----------------
+class PublishIn(BaseModel):
+    username: str
+    strategy_id: str
+
+
+@api.post("/marketplace/publish")
+async def publish_strategy(payload: PublishIn):
+    username = payload.username.lower()
+    doc = await db.custom_strategies.find_one(
+        {"id": payload.strategy_id, "username": username}, {"_id": 0}
+    )
+    if not doc:
+        raise HTTPException(404, "Custom strategy not found")
+    await db.custom_strategies.update_one(
+        {"id": payload.strategy_id, "username": username},
+        {"$set": {"is_public": True, "published_at": now_iso()}},
+    )
+    return {"published": True}
+
+
+@api.post("/marketplace/unpublish")
+async def unpublish_strategy(payload: PublishIn):
+    username = payload.username.lower()
+    res = await db.custom_strategies.update_one(
+        {"id": payload.strategy_id, "username": username},
+        {"$set": {"is_public": False}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Custom strategy not found")
+    return {"unpublished": True}
+
+
+@api.get("/marketplace")
+async def marketplace(limit: int = 50):
+    cursor = db.custom_strategies.find(
+        {"is_public": True}, {"_id": 0}
+    ).sort("published_at", -1)
+    items = await cursor.to_list(max(1, min(limit, 200)))
+    # rename `username` to `creator` and drop user-internal fields from listing
+    out = []
+    for s in items:
+        out.append({
+            "id": s["id"],
+            "name": s["name"],
+            "category": s.get("category", "Custom"),
+            "tagline": s.get("tagline", ""),
+            "description": s.get("description", ""),
+            "legs": s["legs"],
+            "creator": s["username"],
+            "installs": int(s.get("installs", 0)),
+            "published_at": s.get("published_at"),
+        })
+    return out
+
+
+class InstallIn(BaseModel):
+    username: str
+    strategy_id: str
+
+
+@api.post("/marketplace/install")
+async def install_strategy(payload: InstallIn):
+    username = payload.username.lower()
+    user = await db.users.find_one({"username": username}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    source = await db.custom_strategies.find_one(
+        {"id": payload.strategy_id, "is_public": True}, {"_id": 0}
+    )
+    if not source:
+        raise HTTPException(404, "Public strategy not found")
+    if source["username"] == username:
+        raise HTTPException(400, "You already own this strategy")
+    # Clone into requester's library with a new ID
+    new_doc = {
+        "id": f"custom_{uuid.uuid4().hex[:10]}",
+        "username": username,
+        "name": source["name"],
+        "category": source.get("category", "Custom"),
+        "tagline": source.get("tagline", ""),
+        "description": source.get("description", ""),
+        "risk": source.get("risk", "User-defined"),
+        "reward": source.get("reward", "User-defined"),
+        "best_regime": source.get("best_regime", "ANY"),
+        "legs": source["legs"],
+        "is_custom": True,
+        "is_public": False,
+        "installed_from": source["id"],
+        "created_at": now_iso(),
+    }
+    await db.custom_strategies.insert_one(new_doc.copy())
+    # Bump install counter on the source
+    await db.custom_strategies.update_one(
+        {"id": payload.strategy_id},
+        {"$inc": {"installs": 1}},
+    )
+    return {k: v for k, v in new_doc.items() if k != "_id"}
+
+
+# ---------------- Live Positions WebSocket ----------------
+@app.websocket("/api/ws/positions/{username}")
+async def ws_positions(websocket: WebSocket, username: str):
+    username = username.lower()
+    await websocket.accept()
+    try:
+        while True:
+            trades_cursor = db.trades.find(
+                {"username": username, "status": "OPEN"}, {"_id": 0}
+            )
+            open_trades = await trades_cursor.to_list(200)
+            # Group by symbol to fetch one snapshot per symbol
+            symbols = sorted({t["symbol"] for t in open_trades})
+            snaps = {sym: get_market_snapshot(sym) for sym in symbols}
+            enriched = []
+            total_unrealized = 0.0
+            for t in open_trades:
+                snap = snaps[t["symbol"]]
+                pnl = 0.0
+                for leg in t["legs"]:
+                    pnl += compute_leg_pnl(TradeLeg(**leg), snap["spot"], snap["iv"], 7)
+                pnl = round(pnl, 2)
+                total_unrealized += pnl
+                enriched.append({
+                    "id": t["id"],
+                    "symbol": t["symbol"],
+                    "strategy_name": t["strategy_name"],
+                    "leg_count": len(t["legs"]),
+                    "unrealized_pnl": pnl,
+                    "current_spot": snap["spot"],
+                    "spot_at_entry": t.get("spot_at_entry", 0),
+                })
+            await websocket.send_json({
+                "type": "positions",
+                "ts": now_iso(),
+                "open_count": len(enriched),
+                "total_unrealized_pnl": round(total_unrealized, 2),
+                "positions": enriched,
+            })
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        logger.warning(f"WS positions error for {username}: {e}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
 # ---------------- App wiring ----------------
 app.include_router(api)
 app.add_middleware(

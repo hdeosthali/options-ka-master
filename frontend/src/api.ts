@@ -146,6 +146,56 @@ export const api = {
     const wsBase = httpBase.replace(/^http/, "ws");
     return `${wsBase}/api/ws/chain/${symbol}`;
   },
+  positionsWsUrl: (username: string) => {
+    const httpBase = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+    const wsBase = httpBase.replace(/^http/, "ws");
+    return `${wsBase}/api/ws/positions/${username}`;
+  },
+  // Iteration 5 — Marketplace
+  publishStrategy: (username: string, strategy_id: string) =>
+    request<{ published: boolean }>("/marketplace/publish", {
+      method: "POST",
+      body: JSON.stringify({ username, strategy_id }),
+    }),
+  unpublishStrategy: (username: string, strategy_id: string) =>
+    request<{ unpublished: boolean }>("/marketplace/unpublish", {
+      method: "POST",
+      body: JSON.stringify({ username, strategy_id }),
+    }),
+  listMarketplace: () => request<MarketplaceItemT[]>("/marketplace"),
+  installStrategy: (username: string, strategy_id: string) =>
+    request<StrategyT & { is_custom?: boolean }>("/marketplace/install", {
+      method: "POST",
+      body: JSON.stringify({ username, strategy_id }),
+    }),
+};
+
+export type MarketplaceItemT = {
+  id: string;
+  name: string;
+  category: string;
+  tagline: string;
+  description: string;
+  legs: { action: string; type: string; offset: number }[];
+  creator: string;
+  installs: number;
+  published_at: string | null;
+};
+
+export type PositionWsT = {
+  type: "positions";
+  ts: string;
+  open_count: number;
+  total_unrealized_pnl: number;
+  positions: {
+    id: string;
+    symbol: string;
+    strategy_name: string;
+    leg_count: number;
+    unrealized_pnl: number;
+    current_spot: number;
+    spot_at_entry: number;
+  }[];
 };
 
 export type MirrorResultT = {

@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 6 — Marketplace + Real-time positions WebSocket. Backend 23/23 pytest pass (publish/unpublish/list/install/own=400/non-owned=404, install counter increment, WS positions zero-trades + with-open-trades + 2s streaming, all iter1-5 regression). Frontend: Strategies header shows BOTH 'Market' (open-market-btn) and '+ New' (open-editor-btn) buttons ✓. Marketplace screen renders published strategies with @creator, install count, leg pills, and proper buttons ('Your strategy' disabled for owner / 'Install to my library' for others) ✓. Install flow clones into buyer's library, increments source install counter (verified 0→1 in UI), and clone appears in buyer's Strategies tab with CUSTOM badge ✓. Portfolio tab — portfolio-live-badge renders 'LIVE' (green) confirming WebSocket /api/ws/positions upgrade succeeds through the ingress ✓. CRITICAL BUG: clicking 'Publish to Marketplace' button (testID toggle-publish-btn) in the custom-strategy detail modal triggers `ReferenceError: togglePublish is not defined` at strategies.tsx:400 and shows the React red-screen. The handler is referenced via onPress={togglePublish} but the function was never declared in the component (api.publishStrategy/unpublishStrategy ARE defined in src/api.ts; only the wiring in strategies.tsx is missing). Workaround used during testing: publish via direct API call.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/greeks, /api/payoff (custom_*)", "issue": "find_strategy() still does not require username when strategy_id starts with 'custom_' — minor cross-user info leak, carried over from iter5."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/(tabs)/strategies.tsx",
+        "issue": "ReferenceError: togglePublish is not defined — onPress={togglePublish} at line 400 references an undeclared function. Clicking the Publish/Unpublish button in the custom strategy detail modal crashes the screen with a red-error overlay. The api wrappers api.publishStrategy and api.unpublishStrategy exist in src/api.ts; only the in-component handler is missing.",
+        "testID": "toggle-publish-btn",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration6.py",
+    "/app/test_reports/pytest/pytest_iteration6.xml"
+  ],
+  "action_items": [
+    "[CRITICAL] In /app/frontend/app/(tabs)/strategies.tsx add a togglePublish handler inside the Strategies component, e.g.:\n   const togglePublish = async () => {\n     if (!selected || !u) return;\n     const isPub = !!(selected as any).is_public;\n     try {\n       if (isPub) await api.unpublishStrategy(u, selected.id);\n       else await api.publishStrategy(u, selected.id);\n       // refresh both the customs list AND the locally-selected modal state\n       const list = await api.customStrategies(u);\n       setStrategies((prev) => prev.map((s) => s.id === selected.id ? { ...s, is_public: !isPub } : s));\n       setSelected((prev) => prev ? ({ ...prev, is_public: !isPub } as any) : prev);\n     } catch (e: any) { Alert.alert('Publish failed', String(e?.message || e)); }\n   };",
+    "[Minor — carried over from iter5] Tighten find_strategy() so custom_* ids require a username.",
+    "[Optional] Add a testID to the bottom tab buttons in app/(tabs)/_layout.tsx (e.g. tabBarTestID='tab-strategies') to make UI testing more deterministic (currently tab-strategies/tab-portfolio etc. don't exist; tests have to fall back to text='Strategies')."
+  ],
+  "critical_code_review_comments": [
+    "strategies.tsx references togglePublish without defining it — this would have been caught by a TypeScript build with `noImplicitAny`/`strict` enabled. Recommend enabling stricter tsconfig + running `tsc --noEmit` as part of CI.",
+    "server.py marketplace endpoints look clean. /api/marketplace/install correctly clones with new uuid id, sets installed_from, and increments installs — confirmed via tests + UI install counter 0→1.",
+    "WS /api/ws/positions/{username} streams every 2s correctly; ingress upgrade works (frontend badge = LIVE)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration6.py (new)"
+  ],
+  "success_rate": {
+    "backend": "100% (23/23)",
+    "frontend": "6/7 features pass — only toggle-publish-btn handler is broken (ReferenceError). Everything else (header buttons, marketplace listing, owner 'Your strategy' disabled state, install flow + counter, CUSTOM badge in buyer library, Portfolio LIVE badge) verified working."
+  },
+  "seed_data_creation": "Two test users provisioned per pytest run (itr6c*, itr6b*) and one TEST_MarketStrat custom strategy + one cloned strat in buyer's library + one open trade on buyer's clone (used to validate WS positions). Plus UI-test users creat26d4a / buyer69a04 with custom_7439e8d43b published and installed (install_count=1).",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend marketplace + WS endpoints fully working. Only 1 frontend wiring bug to fix: define togglePublish in app/(tabs)/strategies.tsx and call api.publishStrategy / api.unpublishStrategy. After fix, retest by: (1) login as user A, /editor → save custom strategy, open detail modal → tap 'Publish to Marketplace' → button label flips to 'Unpublish from Marketplace' with no red-screen; (2) navigate /marketplace from another user B and click Install → buyer's Strategies tab shows the new CUSTOM card; (3) confirm portfolio-live-badge shows 'LIVE'.",
+  "rca_of_issue": "strategies.tsx line 400 reads `onPress={togglePublish}` but a `togglePublish` symbol is never declared in the Strategies component (verified by `grep -n togglePublish app/(tabs)/strategies.tsx` returning only the JSX reference, no declaration). At runtime the JSX evaluates the identifier in the module scope and JavaScript throws ReferenceError, which the Expo Router error boundary catches and renders as the red overlay. Fix is to define the handler that calls api.publishStrategy(u, selected.id) or api.unpublishStrategy(u, selected.id) based on selected.is_public, then optimistically update local state."
+}

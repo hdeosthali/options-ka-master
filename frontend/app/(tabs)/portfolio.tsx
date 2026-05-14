@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
 import { TrendingUp, TrendingDown, Inbox, Radio } from "lucide-react-native";
-import { api, session, type TradeT, type PortfolioT } from "../../src/api";
+import { api, session, type TradeT, type PortfolioT, type PositionWsT } from "../../src/api";
 import { theme, formatINR, formatPct } from "../../src/theme";
 
 type Tab = "OPEN" | "CLOSED";
@@ -22,10 +22,14 @@ export default function Portfolio() {
   const [portfolio, setPortfolio] = useState<PortfolioT | null>(null);
   const [tab, setTab] = useState<Tab>("OPEN");
   const [refreshing, setRefreshing] = useState(false);
+  const [live, setLive] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const usernameRef = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     const u = await session.get();
     if (!u) return;
+    usernameRef.current = u;
     try {
       const [t, p] = await Promise.all([api.listTrades(u), api.portfolio(u)]);
       setTrades(t);
@@ -37,10 +41,53 @@ export default function Portfolio() {
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
+  // Live positions WebSocket — patches open-trade unrealized_pnl in place
   useEffect(() => {
-    const id = setInterval(load, 15000);
-    return () => clearInterval(id);
-  }, [load]);
+    let cancelled = false;
+    (async () => {
+      const u = await session.get();
+      if (!u) return;
+      try {
+        const ws = new WebSocket(api.positionsWsUrl(u));
+        wsRef.current = ws;
+        ws.onopen = () => !cancelled && setLive(true);
+        ws.onmessage = (e) => {
+          try {
+            const msg: PositionWsT = JSON.parse(e.data as string);
+            if (msg.type !== "positions") return;
+            const byId = new Map(msg.positions.map((p) => [p.id, p]));
+            setTrades((prev) =>
+              prev.map((t) => {
+                const p = byId.get(t.id);
+                if (!p || t.status !== "OPEN") return t;
+                return { ...t, unrealized_pnl: p.unrealized_pnl, current_spot: p.current_spot };
+              })
+            );
+            setPortfolio((prev) =>
+              prev
+                ? {
+                    ...prev,
+                    unrealized_pnl: msg.total_unrealized_pnl,
+                    total_value: prev.capital + msg.total_unrealized_pnl,
+                  }
+                : prev
+            );
+          } catch {}
+        };
+        ws.onerror = () => !cancelled && setLive(false);
+        ws.onclose = () => !cancelled && setLive(false);
+      } catch {
+        setLive(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch {}
+        wsRef.current = null;
+      }
+    };
+  }, []);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -93,12 +140,26 @@ export default function Portfolio() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Portfolio</Text>
-        {portfolio && (
-          <Text style={styles.subtitle}>
-            Capital {formatINR(portfolio.capital)} · {portfolio.win_rate}% win rate
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Portfolio</Text>
+          {portfolio && (
+            <Text style={styles.subtitle}>
+              Capital {formatINR(portfolio.capital)} · {portfolio.win_rate}% win rate
+            </Text>
+          )}
+        </View>
+        <View
+          testID="portfolio-live-badge"
+          style={[
+            styles.liveBadge,
+            { backgroundColor: live ? theme.colors.profitBg : theme.colors.surface },
+          ]}
+        >
+          <View style={[styles.liveDot, { backgroundColor: live ? theme.colors.profit : theme.colors.textTertiary }]} />
+          <Text style={[styles.liveText, { color: live ? theme.colors.profit : theme.colors.textTertiary }]}>
+            {live ? "LIVE" : "POLLING"}
           </Text>
-        )}
+        </View>
       </View>
 
       {portfolio && (
@@ -250,7 +311,19 @@ const Card = ({ label, value }: { label: string; value: number }) => {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.colors.bg },
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 },
+  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 },
+  liveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  liveDot: { width: 6, height: 6, borderRadius: 999 },
+  liveText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   title: { color: theme.colors.textPrimary, fontSize: 28, fontWeight: "800", letterSpacing: -0.5 },
   subtitle: { color: theme.colors.textTertiary, fontSize: 12, marginTop: 4 },
   summary: { flexDirection: "row", gap: 12, paddingHorizontal: 16, marginVertical: 12 },
