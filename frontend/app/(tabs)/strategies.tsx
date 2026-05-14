@@ -138,6 +138,32 @@ export default function Strategies() {
     setTimeout(() => router.push({ pathname: "/backtest", params: { strategyId: sid, symbol: sym } }), 100);
   };
 
+  const togglePublish = async () => {
+    if (!selected || !(selected as any).is_custom) return;
+    const u = await session.get();
+    if (!u) return;
+    const isPub = !!(selected as any).is_public;
+    try {
+      if (isPub) {
+        await api.unpublishStrategy(u, selected.id);
+        Alert.alert("Unpublished", `"${selected.name}" removed from Marketplace.`);
+      } else {
+        await api.publishStrategy(u, selected.id);
+        Alert.alert("Published", `"${selected.name}" is now in the Marketplace.`);
+      }
+      // Refresh customs and update the selected modal in-place
+      const custom = await api.listCustomStrategies(u);
+      setStrategies((prev) => {
+        const builtIn = prev.filter((s) => !(s as any).is_custom);
+        return [...builtIn, ...custom];
+      });
+      const updated = custom.find((c) => c.id === selected.id);
+      if (updated) setSelected(updated as any);
+    } catch (e: any) {
+      Alert.alert("Failed", e.message);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>

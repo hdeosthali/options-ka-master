@@ -1,0 +1,38 @@
+{
+  "summary": "Iteration 7 — Retest of the togglePublish ReferenceError crash from iter6. FIX VERIFIED. togglePublish is now declared inside the Strategies component (strategies.tsx:141-165) and correctly wired to onPress at line 426. End-to-end UI flow exercised on the live preview URL: login as creator → /editor → save 'Test Pub' (2 default legs) → card appears in Strategies list with CUSTOM badge ✓ → open detail modal → 'Publish to Marketplace' button (testID=toggle-publish-btn) visible below Backtest ✓ → tap publish → NO ReferenceError / NO red-screen ✓ → success alert dismissed ✓ → MODAL STAYS OPEN and button label flips IN-PLACE to 'Unpublish from Marketplace' (no reload, exactly per spec) ✓ → tap unpublish → no crash, label flips back to 'Publish to Marketplace' ✓. Built-in strategies (Iron Condor, Bull Put Spread, etc.) correctly hide the publish button via `{(selected as any).is_custom && ...}` conditional render — verified by inspecting the list (only Test Pub carries the CUSTOM badge) and by reading strategies.tsx:422. Iter6 critical bug is closed.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/greeks, /api/payoff (custom_*)", "issue": "Carried over from iter5/6: find_strategy() does not require username when strategy_id starts with 'custom_' — minor cross-user info leak."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/test_reports/iteration_6.json",
+    "/app/backend/tests/test_iteration6.py"
+  ],
+  "action_items": [
+    "[Optional / carryover] Tighten find_strategy() so custom_* ids require a username (cross-user info leak surface).",
+    "[Optional] Add testIDs to bottom-tab buttons (tab-strategies, tab-portfolio, etc.) to remove the text='Strategies' fallback in future UI tests."
+  ],
+  "critical_code_review_comments": [
+    "Fix looks clean: togglePublish is declared as an async arrow inside the Strategies component (closure over selected/setSelected/setStrategies), correctly branches on (selected as any).is_public, awaits api.publishStrategy / api.unpublishStrategy, refreshes the customs list, and updates the selected modal in-place via setSelected(updated). This matches the spec exactly — modal does not reload.",
+    "Conditional render `{(selected as any).is_custom && <publish button>}` at line 422 correctly hides the publish CTA for built-in strategies.",
+    "No TypeScript build is run in CI — recommend `tsc --noEmit` to catch this class of ReferenceError pre-merge."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "n/a (frontend-only retest as requested)",
+    "frontend": "100% — all 5 frontend acceptance criteria for the togglePublish fix pass."
+  },
+  "seed_data_creation": "UI test created one user (creator46250) and one custom strategy 'Test Pub' (published then unpublished, ends in unpublished state).",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter6 togglePublish ReferenceError is fixed and verified end-to-end on the preview URL. Marketplace cross-user install/clone flow and Portfolio LIVE WebSocket badge were already validated in iter6 and were not re-tested here since they were not impacted by this fix. Backend was 23/23 in iter6 — no backend regression expected from this UI-only change.",
+  "rca_of_issue": "Iter6 root cause: onPress={togglePublish} referenced an undeclared identifier. Iter7 fix: handler is now declared inside the component (lines 141-165), calls the existing api.publishStrategy / api.unpublishStrategy wrappers, then refreshes both the list (setStrategies) and the open modal (setSelected) so the button label flips without unmounting the modal. Verified: clicking the button no longer raises ReferenceError and the label flips correctly in both directions."
+}
