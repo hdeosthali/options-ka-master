@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -17,37 +17,125 @@ export default function Chain() {
   const [symbol, setSymbol] = useState("NIFTY");
   const [chain, setChain] = useState<OptionChainT | null>(null);
   const [loading, setLoading] = useState(true);
+  const [live, setLive] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const loadPolling = useCallback(async () => {
     try {
       const data = await api.optionChain(symbol);
       setChain(data);
+      setLoading(false);
     } catch (e) {
       console.warn(e);
-    } finally {
-      setLoading(false);
     }
   }, [symbol]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    setLoading(true);
+    setLive(false);
 
-  useEffect(() => {
-    const id = setInterval(load, 15000);
-    return () => clearInterval(id);
-  }, [load]);
+    // Tear down previous
+    if (wsRef.current) {
+      try {
+        wsRef.current.close();
+      } catch {}
+      wsRef.current = null;
+    }
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+
+    let opened = false;
+    try {
+      const ws = new WebSocket(api.chainWsUrl(symbol));
+      wsRef.current = ws;
+      ws.onopen = () => {
+        opened = true;
+        setLive(true);
+      };
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data as string);
+          if (msg.type === "chain" && msg.data) {
+            setChain(msg.data);
+            setLoading(false);
+          }
+        } catch {}
+      };
+      ws.onerror = () => {
+        setLive(false);
+      };
+      ws.onclose = () => {
+        setLive(false);
+        if (!opened && !pollRef.current) {
+          loadPolling();
+          pollRef.current = setInterval(loadPolling, 15000);
+        }
+      };
+    } catch {
+      loadPolling();
+      pollRef.current = setInterval(loadPolling, 15000);
+    }
+
+    // Safety fallback: if WS hasn't opened in 4s, start polling concurrently
+    const safety = setTimeout(() => {
+      if (!opened && !pollRef.current) {
+        loadPolling();
+        pollRef.current = setInterval(loadPolling, 15000);
+      }
+    }, 4000);
+
+    return () => {
+      clearTimeout(safety);
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {}
+        wsRef.current = null;
+      }
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [symbol, loadPolling]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Option Chain</Text>
-        {chain && (
-          <Text style={styles.subtitle}>
-            ATM ₹{chain.atm.toLocaleString("en-IN")} • Spot ₹{chain.snapshot.spot.toLocaleString("en-IN")} • IV {chain.snapshot.iv}%
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Option Chain</Text>
+          {chain && (
+            <Text style={styles.subtitle}>
+              ATM ₹{chain.atm.toLocaleString("en-IN")} • Spot ₹
+              {chain.snapshot.spot.toLocaleString("en-IN")} • IV {chain.snapshot.iv}%
+            </Text>
+          )}
+        </View>
+        <View
+          testID="chain-live-badge"
+          style={[
+            styles.liveBadge,
+            { backgroundColor: live ? theme.colors.profitBg : theme.colors.surface },
+          ]}
+        >
+          <View
+            style={[
+              styles.liveDot,
+              { backgroundColor: live ? theme.colors.profit : theme.colors.textTertiary },
+            ]}
+          />
+          <Text
+            style={[
+              styles.liveText,
+              { color: live ? theme.colors.profit : theme.colors.textTertiary },
+            ]}
+          >
+            {live ? "LIVE" : "POLLING"}
           </Text>
-        )}
+        </View>
       </View>
 
       <View style={styles.symRow}>
@@ -72,7 +160,11 @@ export default function Chain() {
           <View style={styles.tableHead}>
             <Text style={[styles.headCell, { flex: 1, color: theme.colors.profit }]}>CALL</Text>
             <Text style={[styles.headCell, { width: 80, textAlign: "center" }]}>STRIKE</Text>
-            <Text style={[styles.headCell, { flex: 1, textAlign: "right", color: theme.colors.loss }]}>PUT</Text>
+            <Text
+              style={[styles.headCell, { flex: 1, textAlign: "right", color: theme.colors.loss }]}
+            >
+              PUT
+            </Text>
           </View>
           <View style={styles.subHead}>
             <Text style={[styles.subHeadCell, { flex: 1 }]}>OI · IV · LTP</Text>
@@ -100,7 +192,12 @@ export default function Chain() {
                     </Text>
                     {isAtm && <Text style={styles.atmTag}>ATM</Text>}
                   </View>
-                  <View style={[styles.side, { backgroundColor: theme.colors.lossBg, alignItems: "flex-end" }]}>
+                  <View
+                    style={[
+                      styles.side,
+                      { backgroundColor: theme.colors.lossBg, alignItems: "flex-end" },
+                    ]}
+                  >
                     <Text style={[styles.ltp, { color: theme.colors.loss }]}>₹{r.pe.ltp}</Text>
                     <Text style={styles.metaSm}>{r.pe.iv}%</Text>
                     <Text style={styles.metaSm}>{(r.pe.oi / 1000).toFixed(1)}k</Text>
@@ -117,7 +214,14 @@ export default function Chain() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.colors.bg },
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 },
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
   liveBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -134,10 +238,12 @@ const styles = StyleSheet.create({
   subtitle: { color: theme.colors.textTertiary, fontSize: 12, marginTop: 4 },
   symRow: { flexDirection: "row", paddingHorizontal: 16, gap: 8, marginVertical: 12 },
   symChip: {
-    paddingHorizontal: 14, paddingVertical: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 999,
     backgroundColor: theme.colors.surface,
-    borderWidth: 1, borderColor: theme.colors.border,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
   symChipActive: { backgroundColor: theme.colors.brand, borderColor: theme.colors.brand },
   symChipText: { color: theme.colors.textSecondary, fontSize: 12, fontWeight: "600" },
@@ -147,7 +253,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     backgroundColor: theme.colors.surface,
-    borderTopWidth: 1, borderBottomWidth: 1,
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
     borderColor: theme.colors.border,
   },
   headCell: { fontSize: 11, fontWeight: "800", letterSpacing: 1 },
@@ -179,12 +286,14 @@ const styles = StyleSheet.create({
   metaSm: { color: theme.colors.textSecondary, fontSize: 11, fontFamily: "Courier" },
   ltp: { fontSize: 14, fontWeight: "700", fontFamily: "Courier" },
   strikeCol: {
-    width: 80, alignItems: "center", justifyContent: "center",
-    borderLeftWidth: 1, borderRightWidth: 1,
+    width: 80,
+    alignItems: "center",
+    justifyContent: "center",
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
     borderColor: theme.colors.border,
     paddingVertical: 8,
   },
   strikeText: { color: theme.colors.textPrimary, fontSize: 14, fontWeight: "700" },
   atmTag: { color: theme.colors.accent, fontSize: 9, fontWeight: "800", marginTop: 2, letterSpacing: 0.5 },
 });
-

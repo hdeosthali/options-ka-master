@@ -533,7 +533,7 @@ def compute_leg_pnl(leg: TradeLeg, spot: float, iv: float, expiry_days: int) -> 
 
 @api.post("/trades/apply")
 async def apply_strategy(payload: ApplyStrategyIn):
-    strategy = next((s for s in STRATEGIES if s["id"] == payload.strategy_id), None)
+    strategy = await find_strategy(payload.strategy_id, payload.username)
     if not strategy:
         raise HTTPException(404, "Strategy not found")
     user = await db.users.find_one({"username": payload.username.lower()}, {"_id": 0})

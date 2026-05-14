@@ -1,0 +1,54 @@
+{
+  "summary": "Iteration 5 re-test: BOTH iter4 critical bugs are FIXED and verified end-to-end. (1) POST /api/trades/apply now resolves custom strategies via find_strategy() and returns 200 — confirmed via pytest (test_apply_custom_trade) and live UI (Place Paper Trade on custom strategy → portfolio shows open_count:1, unrealized_pnl:-204.25). (2) app/(tabs)/chain.tsx now opens WebSocket to /api/ws/chain/{symbol} and renders a LIVE badge (testID='chain-live-badge') — verified visible with text 'LIVE' on Chain tab, stays LIVE when switching NIFTY → BANKNIFTY. Backend tests: 22/23 pass (only failure is the security-tightening assertion from prev agent: greeks lookup with no username currently returns 200, recommend tightening but not blocker). All 5 built-in strategies (iron_condor, short_strangle, bull_put_spread, covered_call, long_straddle) apply 200 OK. WebSocket chain stream and invalid-symbol close still work. Editor → Preview Payoff → Save persists to backend; custom strategy appears on Strategies tab with CUSTOM badge; detail modal renders Payoff chart + Net Greeks (Δ/Γ/Θ/V) + Structure + Lots selector + Place Paper Trade button.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {
+        "endpoint": "POST /api/greeks, /api/payoff (custom strategies)",
+        "issue": "find_strategy() still does NOT require username when strategy_id starts with 'custom_'. Any user who knows a custom_xxxxxxxxxx id can fetch greeks/payoff for another user's strategy (minor info leak). Same as iter4 minor note — recommend adding `if not username: return None` when id startswith 'custom_'."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "Editor → Save → return to Strategies tab",
+        "issue": "On react-native-web, Alert.alert('Saved',...,[{text:'OK', onPress: () => router.replace('/(tabs)/strategies')}]) — the onPress callback does NOT fire after the user dismisses the web alert, so the user remains on the Editor screen after a successful save (backend persists fine). Works on real Expo Go / native. Either (a) replace Alert.alert with a custom in-app modal whose Confirm button calls router.replace, or (b) call router.replace BEFORE Alert.alert. Backend save is unaffected.",
+        "affected_testIDs": ["editor-save-btn"]
+      },
+      {
+        "flow": "Strategies tab refresh after returning from editor",
+        "issue": "app/(tabs)/strategies.tsx uses `useEffect(()=>{...}, [u])` to fetch built-in + custom strategies. When navigating back from /editor the screen does not remount, so newly saved customs only appear after a manual reload of the tab (e.g., logout/login or pull-to-refresh). Use `useFocusEffect` from '@react-navigation/native' or 'expo-router' to refetch on focus.",
+        "affected_testIDs": []
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/pytest_iteration5.xml"
+  ],
+  "action_items": [
+    "(Optional/minor) Tighten find_strategy() in server.py: when strategy_id starts with 'custom_' require username, return None otherwise. Closes minor cross-user info leak on /api/greeks and /api/payoff.",
+    "(Recommended) In app/editor.tsx, replace `Alert.alert('Saved', ..., [{text:'OK', onPress:()=>router.replace('/(tabs)/strategies')}])` with either: navigate first then alert, or use a custom modal. Current code leaves the user on the Editor screen on web preview after a successful save.",
+    "(Recommended) Change strategies.tsx useEffect → useFocusEffect so the strategies list refreshes when returning from /editor. Without this fix, even after the Alert.alert issue is fixed, a freshly-saved custom strategy will not appear until the tab is unmounted/remounted."
+  ],
+  "critical_code_review_comments": [
+    "server.py is still ~1740 lines — split into routers (auth, market, strategies, ws, payments, trades, broker, notifications) — same comment as iter4.",
+    "find_strategy() username-optional behavior is a latent security issue — easy fix, do it now.",
+    "Editor uses Alert.alert with onPress callback — known react-native-web limitation; this pattern recurs and should be avoided.",
+    "strategies.tsx should use useFocusEffect — useEffect only fires on first mount of the tab, not on re-focus."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "96% (22/23) — only failing test is the security-tightening assertion (no-username greeks lookup) which is a recommendation, not an iter4 acceptance criterion",
+    "frontend": "100% on iter4 acceptance criteria — LIVE badge visible, symbol switch works, custom strategy apply succeeds end-to-end (verified via portfolio open_count=1)"
+  },
+  "seed_data_creation": "Test users itr5xxxxxx created via /api/auth/login. User itr594328 has 1 saved custom strategy (custom_19d26382ac TEST_AutoStrat) and 1 open trade applied for that custom strategy. Other transient TEST_ customs created during pytest run (auto-cleaned by test_delete_custom).",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Iter4 acceptance fully met. Open items are nice-to-have improvements (security tightening + 2 UX papercuts on web). Main agent can verify the 2 frontend UX fixes (Alert.alert pattern + useFocusEffect) by logging in as a fresh username, creating a custom strategy via /editor, pressing Save, and confirming auto-navigation back to Strategies tab with the new card visible without a manual reload.",
+  "rca_of_issue": "Iter4 RCAs are resolved. Verification: (a) server.py line 536 `strategy = await find_strategy(payload.strategy_id, payload.username)` — confirmed by `grep -n find_strategy server.py` and by test_apply_custom_trade returning 200 + portfolio open_count=1 after UI Place Paper Trade. (b) chain.tsx now contains `new WebSocket(api.chainWsUrl(symbol))` (line 52), tracks `live` state, renders `<View testID='chain-live-badge'>{live ? 'LIVE' : 'POLLING'}</View>` (line 118/136), and falls back to setInterval polling on error/close — confirmed via grep + DOM inspection showing the LIVE badge in the header."
+}
