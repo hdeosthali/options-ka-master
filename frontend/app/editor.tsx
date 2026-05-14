@@ -90,9 +90,15 @@ export default function Editor() {
     setSaving(true);
     try {
       await api.createCustomStrategy({ username: u, name: name.trim(), legs });
-      Alert.alert("Saved", `"${name}" is now in your Strategies tab.`, [
-        { text: "OK", onPress: () => router.replace("/(tabs)/strategies") },
-      ]);
+      // On web, Alert.alert callbacks may not fire — navigate directly after a short delay.
+      if (Platform.OS === "web") {
+        Alert.alert("Saved", `"${name}" is now in your Strategies tab.`);
+        setTimeout(() => router.replace("/(tabs)/strategies"), 50);
+      } else {
+        Alert.alert("Saved", `"${name}" is now in your Strategies tab.`, [
+          { text: "OK", onPress: () => router.replace("/(tabs)/strategies") },
+        ]);
+      }
     } catch (e: any) {
       Alert.alert("Save failed", e.message);
     } finally {

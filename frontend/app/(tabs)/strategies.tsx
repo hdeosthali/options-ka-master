@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   Dimensions,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { TrendingUp, ShieldAlert, X, BarChart3, Activity, LineChart } from "lucide-react-native";
 import { api, session, type StrategyT, type GreeksResultT, type PayoffResultT } from "../../src/api";
 import { theme, formatINR } from "../../src/theme";
@@ -59,6 +59,23 @@ export default function Strategies() {
       }
     })();
   }, []);
+
+  // Refetch customs whenever this tab regains focus (e.g. after saving in /editor)
+  useFocusEffect(
+    useCallback(() => {
+      (async () => {
+        try {
+          const u = await session.get();
+          if (!u) return;
+          const custom = await api.listCustomStrategies(u);
+          setStrategies((prev) => {
+            const builtIn = prev.filter((s) => !(s as any).is_custom);
+            return [...builtIn, ...custom];
+          });
+        } catch {}
+      })();
+    }, [])
+  );
 
   // Load analysis when modal opens or symbol/lots change
   useEffect(() => {

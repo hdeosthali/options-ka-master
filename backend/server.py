@@ -1639,10 +1639,12 @@ async def find_strategy(strategy_id: str, username: Optional[str] = None) -> Opt
     built_in = next((s for s in STRATEGIES if s["id"] == strategy_id), None)
     if built_in:
         return built_in
-    query: Dict[str, Any] = {"id": strategy_id}
-    if username:
-        query["username"] = username.lower()
-    custom = await db.custom_strategies.find_one(query, {"_id": 0})
+    # Custom strategy: require username so users can't read other users' strategies.
+    if not username:
+        return None
+    custom = await db.custom_strategies.find_one(
+        {"id": strategy_id, "username": username.lower()}, {"_id": 0}
+    )
     return custom
 
 
