@@ -23,6 +23,10 @@ const EXIT_RULES = [
   { id: "EXPIRY_5D", label: "Hold 5 Days" },
   { id: "TARGET_SL", label: "Target / SL" },
 ];
+const SOURCES = [
+  { id: "yfinance", label: "Real NSE (Yahoo)" },
+  { id: "synthetic", label: "Simulated" },
+];
 
 export default function BacktestScreen() {
   const router = useRouter();
@@ -48,7 +52,7 @@ export default function BacktestScreen() {
     if (!strategyId || !symbol) return;
     setRunning(true);
     try {
-      const data = await api.backtest({
+      const data = await api.backtestV2({
         strategy_id: String(strategyId),
         symbol: String(symbol),
         lots: 1,
@@ -57,6 +61,7 @@ export default function BacktestScreen() {
         target_pct: 30,
         stoploss_pct: 50,
         days: 252,
+        source,
       });
       setResult(data);
     } catch (e: any) {
@@ -114,6 +119,22 @@ export default function BacktestScreen() {
             ))}
           </View>
 
+          <Text style={[styles.label, { marginTop: 16 }]}>DATA SOURCE</Text>
+          <View style={styles.chipRow}>
+            {SOURCES.map((r) => (
+              <TouchableOpacity
+                key={r.id}
+                testID={`source-${r.id}`}
+                style={[styles.chip, source === r.id && styles.chipActive]}
+                onPress={() => setSource(r.id as any)}
+              >
+                <Text style={[styles.chipText, source === r.id && styles.chipTextActive]}>
+                  {r.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
           <TouchableOpacity testID="run-backtest-btn" style={styles.runBtn} onPress={run} disabled={running}>
             {running ? (
               <ActivityIndicator color="#fff" />
@@ -129,7 +150,10 @@ export default function BacktestScreen() {
         {result && (
           <>
             <View style={styles.chartCard}>
-              <Text style={styles.cardLabel}>EQUITY CURVE</Text>
+              <View style={{ flexDirection: "row", justifyContent: "space-between", alignItems: "center" }}>
+                <Text style={styles.cardLabel}>EQUITY CURVE</Text>
+                <Text style={styles.cardLabel}>SOURCE: {result.source?.toUpperCase() || "—"}</Text>
+              </View>
               <View style={{ alignItems: "center", marginTop: 8 }}>
                 <EquityCurve series={result.equity_curve} width={320} height={180} />
               </View>

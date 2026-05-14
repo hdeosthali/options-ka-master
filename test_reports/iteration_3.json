@@ -1,0 +1,52 @@
+{
+  "summary": "Iteration 3: 25/26 backend tests pass. Frontend: bell→/alerts, send alert, portfolio mirror button (label flips to 'Mirrored') all work. CRITICAL: /app/frontend/app/backtest.tsx crashes with ReferenceError 'source is not defined' — missing useState for `source`/`setSource` (referenced on lines 64, 128, 129, 131). Backend create-subscription returns 500 because the provided Razorpay TEST key does NOT have plan-create permission (confirmed by direct curl → 'Unauthorized').",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/payments/create-subscription",
+        "issue": "Razorpay returns ServerError (auth/permission) when calling plan.create. Direct curl to api.razorpay.com/v1/plans with provided key returns {\"error\":\"Unauthorized\"}. The test key rzp_test_Sp7mWT04ree3eL lacks Plans/Subscriptions scope. Without a valid plan-creation key, the subscription feature cannot work.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/backtest.tsx",
+        "issue": "ReferenceError: source is not defined at line 128:38. The component references `source` and `setSource` (lines 64, 128, 129, 131) but never declares the state via useState. Entire backtest screen renders a red error overlay; DATA SOURCE chip row never appears. Fix: add `const [source, setSource] = useState<'yfinance'|'synthetic'>('yfinance');` near line 38.",
+        "testID": "source-yfinance / source-synthetic",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration3.py",
+    "/app/test_reports/pytest/pytest_iteration3.xml"
+  ],
+  "action_items": [
+    "Fix backtest.tsx — add missing `const [source, setSource] = useState<'yfinance'|'synthetic'>('yfinance');` so the DATA SOURCE chip row renders and the screen stops crashing.",
+    "Razorpay create-subscription: the supplied test key cannot create Plans (Unauthorized on api.razorpay.com/v1/plans). Either (a) provision a Razorpay test key with Plans/Subscriptions permission, (b) pre-create a plan_id in the Razorpay dashboard and store it as RAZORPAY_PLAN_ID in backend/.env (skip plan.create), or (c) gracefully degrade by returning a stub plan_id in a 'mock subscription' mode similar to KITE."
+  ],
+  "critical_code_review_comments": [
+    "backend/server.py is ~1610 lines — should be split (routers per domain: market, trades, payments, notifications, broker, historical).",
+    "_PRO_PLAN_CACHE is an in-memory dict — fine but on the first request after plan.create fails it still raises HTTPException 500 from inside get_or_create_pro_plan; consider wrapping in try/except and returning a clearer error.",
+    "send_alert returns alert dict with _id stripped, but db.alerts.insert_one(alert.copy()) mutates the dict in-place adding _id. Currently filtered before return — OK but fragile.",
+    "Webhook endpoint correctly verifies HMAC and idempotently stores event — good."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration3.py (new)"
+  ],
+  "success_rate": {
+    "backend": "96% (25/26)",
+    "frontend": "75% (3/4 features work; backtest screen broken)"
+  },
+  "seed_data_creation": "Created test user `itr3<random>` (login auto-creates user). Created one OPEN iron_condor trade for that user for mirror-broker test. Created test user `itr3uitest` for UI testing.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Iter 3 has 2 known issues both reproducible: (1) backtest screen JS crash — verify after main agent adds the missing useState by visiting /backtest and confirming chips for 'Real NSE (Yahoo)' and 'Simulated' appear and tapping each + Run Backtest shows source in EQUITY CURVE header. (2) /api/payments/create-subscription returns 500 — main agent needs a key with Plan-create permission or a workaround. All other iter1/iter2/iter3 endpoints regression-pass (24 endpoints).",
+  "rca_of_issue": "Backtest crash RCA: app/backtest.tsx imports useState and declares strategy/entry/exit/result/running state on lines 34-38 but is missing a state hook for `source`. Lines 64 (POST body), 128 & 131 (chip active styling), 129 (onPress reads `r.id` not source — that line is fine) reference an undeclared `source` identifier, causing a ReferenceError at first render. Reproduction: log in, tap Backtest. Mitigation: add `const [source, setSource] = useState<'yfinance' | 'synthetic'>('yfinance');` to the state block. Subscription RCA: razorpay-python plan.create POSTs to https://api.razorpay.com/v1/plans which returns 401 Unauthorized for the test key — the key is a checkout-only test key without subscription module enabled. Confirmed via raw curl."
+}

@@ -10,6 +10,7 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="backtest" />
+        <Stack.Screen name="alerts" />
         <Stack.Screen name="payment" options={{ presentation: "modal" }} />
       </Stack>
     </SafeAreaProvider>

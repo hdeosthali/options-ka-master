@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "expo-router";
-import { TrendingUp, TrendingDown, Inbox } from "lucide-react-native";
+import { TrendingUp, TrendingDown, Inbox, Radio } from "lucide-react-native";
 import { api, session, type TradeT, type PortfolioT } from "../../src/api";
 import { theme, formatINR, formatPct } from "../../src/theme";
 
@@ -70,6 +70,22 @@ export default function Portfolio() {
         },
       },
     ]);
+  };
+
+  const mirror = async (id: string) => {
+    const u = await session.get();
+    if (!u) return;
+    try {
+      const res = await api.mirrorBroker(u, id);
+      const orderIds = res.orders.map((o) => o.order_id).join("\n");
+      Alert.alert(
+        res.using_real_broker ? "Mirrored to Zerodha Kite" : "Mirrored to Mock Broker",
+        `${res.message}\n\nOrder IDs:\n${orderIds}`
+      );
+      await load();
+    } catch (e: any) {
+      Alert.alert("Mirror failed", e.message);
+    }
   };
 
   const filtered = trades.filter((t) => t.status === tab);
@@ -185,13 +201,25 @@ export default function Portfolio() {
                     {t.current_spot ? `  →  Now ₹${t.current_spot.toLocaleString("en-IN")}` : ""}
                   </Text>
                   {t.status === "OPEN" && (
-                    <TouchableOpacity
-                      testID={`square-off-${t.id}`}
-                      style={styles.sqOffBtn}
-                      onPress={() => closeTrade(t.id)}
-                    >
-                      <Text style={styles.sqOffText}>Square Off</Text>
-                    </TouchableOpacity>
+                    <View style={{ flexDirection: "row", gap: 8 }}>
+                      <TouchableOpacity
+                        testID={`mirror-${t.id}`}
+                        style={styles.mirrorBtn}
+                        onPress={() => mirror(t.id)}
+                      >
+                        <Radio size={12} color={theme.colors.brand} />
+                        <Text style={styles.mirrorText}>
+                          {(t as any).broker_order_ids?.length ? "Mirrored" : "Mirror to Broker"}
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        testID={`square-off-${t.id}`}
+                        style={styles.sqOffBtn}
+                        onPress={() => closeTrade(t.id)}
+                      >
+                        <Text style={styles.sqOffText}>Square Off</Text>
+                      </TouchableOpacity>
+                    </View>
                   )}
                 </View>
               </View>
@@ -302,6 +330,18 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   sqOffText: { color: theme.colors.loss, fontSize: 12, fontWeight: "700" },
+  mirrorBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "rgba(37,99,235,0.12)",
+    borderColor: theme.colors.brand,
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  mirrorText: { color: theme.colors.brand, fontSize: 12, fontWeight: "700" },
   empty: { alignItems: "center", padding: 40, gap: 12 },
   emptyTitle: { color: theme.colors.textPrimary, fontSize: 16, fontWeight: "700" },
   emptySub: {

@@ -19,6 +19,7 @@ import {
   TrendingDown,
   Zap,
   ChevronRight,
+  Bell,
 } from "lucide-react-native";
 import {
   api,
@@ -29,6 +30,7 @@ import {
   type StrategyT,
 } from "../../src/api";
 import { theme, formatINR, formatPct } from "../../src/theme";
+import { registerForPushNotifications } from "../../src/push";
 
 const regimeColor = (r: string) => {
   if (r === "BULLISH") return theme.colors.profit;
@@ -71,6 +73,13 @@ export default function Home() {
       loadAll();
     }, [loadAll])
   );
+
+  useEffect(() => {
+    (async () => {
+      const u = await session.get();
+      if (u) registerForPushNotifications(u);
+    })();
+  }, []);
 
   useEffect(() => {
     const id = setInterval(loadAll, 20000);
@@ -152,9 +161,18 @@ export default function Home() {
             <Text style={styles.greeting}>Namaste,</Text>
             <Text style={styles.username}>{user.username}</Text>
           </View>
-          <View style={styles.levelPill}>
-            <Zap size={14} color={theme.colors.accent} fill={theme.colors.accent} />
-            <Text style={styles.levelText}>LVL {user.level}</Text>
+          <View style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
+            <TouchableOpacity
+              testID="open-alerts-btn"
+              style={styles.bellBtn}
+              onPress={() => router.push("/alerts")}
+            >
+              <Bell size={18} color={theme.colors.textPrimary} />
+            </TouchableOpacity>
+            <View style={styles.levelPill}>
+              <Zap size={14} color={theme.colors.accent} fill={theme.colors.accent} />
+              <Text style={styles.levelText}>LVL {user.level}</Text>
+            </View>
           </View>
         </View>
 
@@ -347,6 +365,16 @@ const styles = StyleSheet.create({
     borderRadius: 999,
   },
   levelText: { color: theme.colors.accent, fontSize: 11, fontWeight: "700", letterSpacing: 0.5 },
+  bellBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   portfolioCard: {
     marginHorizontal: 16,
     padding: 20,

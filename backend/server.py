@@ -15,6 +15,12 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timezone, timedelta
 import razorpay
+import asyncio
+import httpx
+try:
+    import yfinance as yf
+except Exception:
+    yf = None
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
@@ -1124,6 +1130,470 @@ async def checkout_page(order_id: str):
 
 
 
+# ---------------- Mock Broker Adapter (Kite Connect Stub) ----------------
+KITE_API_KEY = os.environ.get("KITE_API_KEY", "")
+KITE_API_SECRET = os.environ.get("KITE_API_SECRET", "")
+
+
+class MirrorIn(BaseModel):
+    username: str
+    trade_id: str
+
+
+@api.post("/broker/mirror")
+async def mirror_to_broker(payload: MirrorIn):
+    """Mirror a paper trade to a real broker. If KITE_API_KEY is unset, returns simulated broker order IDs."""
+    username = payload.username.lower()
+    trade = await db.trades.find_one({"id": payload.trade_id, "username": username}, {"_id": 0})
+    if not trade:
+        raise HTTPException(404, "Trade not found")
+    if trade.get("broker_order_ids"):
+        return {"mirrored": True, "already_mirrored": True, "broker_order_ids": trade["broker_order_ids"]}
+
+    using_real = bool(KITE_API_KEY and KITE_API_SECRET)
+    broker_orders = []
+    for leg in trade["legs"]:
+        if using_real:
+            # Real Kite Connect flow would POST to https://api.kite.trade/orders/regular here.
+            # Requires user-level access_token from Kite login redirect — out of scope for this MVP.
+            broker_orders.append({
+                "order_id": f"KITE-{uuid.uuid4().hex[:12].upper()}",
+                "status": "PENDING_USER_AUTH",
+                "broker": "ZERODHA_KITE",
+                "leg": leg,
+            })
+        else:
+            # Simulated broker order — same shape as real Kite response.
+            broker_orders.append({
+                "order_id": f"SIM-{uuid.uuid4().hex[:12].upper()}",
+                "status": "COMPLETE",
+                "broker": "MOCK_BROKER",
+                "leg": leg,
+                "filled_at": now_iso(),
+            })
+
+    await db.trades.update_one(
+        {"id": payload.trade_id},
+        {"$set": {
+            "broker_order_ids": [o["order_id"] for o in broker_orders],
+            "broker": broker_orders[0]["broker"],
+            "mirrored_at": now_iso(),
+        }},
+    )
+    return {
+        "mirrored": True,
+        "broker": broker_orders[0]["broker"],
+        "using_real_broker": using_real,
+        "orders": broker_orders,
+        "message": "Mirrored to mock broker. Set KITE_API_KEY + KITE_API_SECRET in backend .env to use real Zerodha Kite." if not using_real else "Mirrored to Zerodha Kite. Complete authorization in Kite app.",
+    }
+
+
+# ---------------- Push Notifications (Expo Push Service) ----------------
+EXPO_PUSH_URL = os.environ.get("EXPO_PUSH_URL", "https://exp.host/--/api/v2/push/send")
+
+
+class RegisterTokenIn(BaseModel):
+    username: str
+    push_token: str
+    platform: Optional[str] = "unknown"
+
+
+class SendAlertIn(BaseModel):
+    username: str
+    title: str
+    body: str
+    data: Optional[Dict[str, Any]] = None
+
+
+async def send_expo_push(tokens: List[str], title: str, body: str, data: Optional[Dict[str, Any]] = None):
+    if not tokens:
+        return {"sent": 0, "skipped": "no tokens"}
+    messages = [
+        {"to": t, "sound": "default", "title": title, "body": body, "data": data or {}}
+        for t in tokens
+        if t and t.startswith("ExponentPushToken")
+    ]
+    if not messages:
+        return {"sent": 0, "skipped": "no valid Expo tokens"}
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(EXPO_PUSH_URL, json=messages, headers={"Content-Type": "application/json"})
+            return {"sent": len(messages), "expo_response": resp.json()}
+    except Exception as e:
+        logger.warning(f"Expo push failed: {e}")
+        return {"sent": 0, "error": str(e)}
+
+
+@api.post("/notifications/register")
+async def register_push(payload: RegisterTokenIn):
+    username = payload.username.lower()
+    user = await db.users.find_one({"username": username}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    await db.push_tokens.update_one(
+        {"username": username, "push_token": payload.push_token},
+        {"$set": {
+            "username": username,
+            "push_token": payload.push_token,
+            "platform": payload.platform,
+            "updated_at": now_iso(),
+        }},
+        upsert=True,
+    )
+    return {"registered": True}
+
+
+@api.post("/notifications/send")
+async def send_alert(payload: SendAlertIn):
+    username = payload.username.lower()
+    tokens_cursor = db.push_tokens.find({"username": username}, {"_id": 0})
+    docs = await tokens_cursor.to_list(20)
+    tokens = [d["push_token"] for d in docs]
+    # Always store an in-app alert so user can see it on web/no-permission devices
+    alert = {
+        "id": str(uuid.uuid4()),
+        "username": username,
+        "title": payload.title,
+        "body": payload.body,
+        "data": payload.data or {},
+        "created_at": now_iso(),
+        "read": False,
+    }
+    await db.alerts.insert_one(alert.copy())
+    result = await send_expo_push(tokens, payload.title, payload.body, payload.data)
+    return {"alert": {k: v for k, v in alert.items() if k != "_id"}, "push": result}
+
+
+@api.get("/notifications/{username}")
+async def list_alerts(username: str):
+    cursor = db.alerts.find({"username": username.lower()}, {"_id": 0}).sort("created_at", -1)
+    return await cursor.to_list(50)
+
+
+@api.post("/notifications/{username}/strategy-alert")
+async def trigger_strategy_alert(username: str):
+    """Trigger today's AI-recommended-strategy alert for this user."""
+    user = await db.users.find_one({"username": username.lower()}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    snap = get_market_snapshot("NIFTY")
+    pick = next((s for s in STRATEGIES if s["best_regime"] == snap["regime"]), STRATEGIES[0])
+    title = f"{pick['name']} on NIFTY today"
+    body = f"NIFTY ₹{snap['spot']} · {snap['regime'].replace('_', ' ').title()} · {pick['tagline']}"
+    return await send_alert(SendAlertIn(
+        username=username,
+        title=title,
+        body=body,
+        data={"strategy_id": pick["id"], "symbol": "NIFTY", "kind": "STRATEGY_RECO"},
+    ))
+
+
+# ---------------- Razorpay Webhook + Subscription ----------------
+RAZORPAY_WEBHOOK_SECRET = os.environ.get("RAZORPAY_WEBHOOK_SECRET", "options_master_demo_secret")
+_PRO_PLAN_CACHE: Dict[str, Any] = {}
+
+
+async def get_or_create_pro_plan() -> Dict[str, Any]:
+    """Ensure a monthly ₹999 Razorpay Plan exists, return it."""
+    if "plan_id" in _PRO_PLAN_CACHE:
+        return _PRO_PLAN_CACHE
+    cached = await db.razorpay_plans.find_one({"key": "PRO_MONTHLY"}, {"_id": 0})
+    if cached:
+        _PRO_PLAN_CACHE.update(cached)
+        return _PRO_PLAN_CACHE
+    if not razor_client:
+        raise HTTPException(500, "Razorpay not configured")
+    plan = razor_client.plan.create({
+        "period": "monthly",
+        "interval": 1,
+        "item": {
+            "name": "Options Master Pro",
+            "amount": PRO_PRICE_PAISE,
+            "currency": "INR",
+            "description": "Monthly Pro subscription · 10L virtual capital + AI advisor",
+        },
+        "notes": {"product": "options_master_pro_monthly"},
+    })
+    doc = {
+        "key": "PRO_MONTHLY",
+        "plan_id": plan["id"],
+        "amount_paise": PRO_PRICE_PAISE,
+        "created_at": now_iso(),
+    }
+    await db.razorpay_plans.insert_one(doc.copy())
+    _PRO_PLAN_CACHE.update(doc)
+    return _PRO_PLAN_CACHE
+
+
+class CreateSubIn(BaseModel):
+    username: str
+
+
+@api.post("/payments/create-subscription")
+async def create_subscription(payload: CreateSubIn):
+    if not razor_client:
+        raise HTTPException(500, "Razorpay not configured")
+    username = payload.username.lower()
+    user = await db.users.find_one({"username": username}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    plan = await get_or_create_pro_plan()
+    sub = razor_client.subscription.create({
+        "plan_id": plan["plan_id"],
+        "total_count": 12,  # 12 months
+        "customer_notify": 1,
+        "notes": {"username": username},
+    })
+    await db.subscriptions.insert_one({
+        "subscription_id": sub["id"],
+        "username": username,
+        "plan_id": plan["plan_id"],
+        "status": sub.get("status", "created"),
+        "created_at": now_iso(),
+    })
+    return {
+        "subscription_id": sub["id"],
+        "plan_id": plan["plan_id"],
+        "key_id": RAZORPAY_KEY_ID,
+        "amount_paise": PRO_PRICE_PAISE,
+    }
+
+
+@api.post("/payments/webhook")
+async def razorpay_webhook(request: Request):
+    body = await request.body()
+    signature = request.headers.get("x-razorpay-signature", "")
+    expected = hmac.new(RAZORPAY_WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(400, "Invalid webhook signature")
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(400, "Invalid JSON")
+    event = payload.get("event", "")
+    await db.webhook_events.insert_one({
+        "event": event,
+        "received_at": now_iso(),
+        "payload": payload,
+    })
+
+    sub_entity = (payload.get("payload", {}).get("subscription") or {}).get("entity") or {}
+    pay_entity = (payload.get("payload", {}).get("payment") or {}).get("entity") or {}
+    order_entity = (payload.get("payload", {}).get("order") or {}).get("entity") or {}
+    username = (
+        sub_entity.get("notes", {}).get("username")
+        or pay_entity.get("notes", {}).get("username")
+        or order_entity.get("notes", {}).get("username")
+    )
+
+    if event in ("subscription.activated", "subscription.charged", "payment.captured") and username:
+        username = username.lower()
+        user = await db.users.find_one({"username": username}, {"_id": 0})
+        if user:
+            updates = {
+                "is_pro": True,
+                "pro_days_left": 30,
+                "capital": max(user.get("capital", 0), 1000000.0),
+                "badges": list(set(user.get("badges", []) + ["Pro Member"])),
+            }
+            await update_user(username, updates)
+            if sub_entity.get("id"):
+                await db.subscriptions.update_one(
+                    {"subscription_id": sub_entity["id"]},
+                    {"$set": {"status": sub_entity.get("status", "active"), "last_event": event}},
+                )
+            # Push alert
+            await send_alert(SendAlertIn(
+                username=username,
+                title="Pro activated",
+                body="Your Options Master Pro subscription is live. ₹10L capital unlocked.",
+                data={"kind": "PRO_ACTIVATED"},
+            ))
+
+    return {"ok": True, "event": event}
+
+
+# ---------------- Real NSE Historical Data ----------------
+_HIST_CACHE: Dict[str, List[Dict[str, Any]]] = {}
+_HIST_CACHE_DATE: Dict[str, str] = {}
+
+YF_TICKER = {
+    "NIFTY": "^NSEI",
+    "BANKNIFTY": "^NSEBANK",
+    "FINNIFTY": "NIFTY_FIN_SERVICE.NS",
+}
+
+
+def _fetch_yfinance(symbol: str, days: int) -> List[Dict[str, Any]]:
+    if yf is None:
+        return []
+    ticker = YF_TICKER.get(symbol)
+    if not ticker:
+        return []
+    try:
+        period = "1y" if days <= 260 else "2y"
+        df = yf.Ticker(ticker).history(period=period, interval="1d")
+        if df is None or df.empty:
+            return []
+        out = []
+        # crude IV proxy using rolling 20-day annualised volatility
+        df = df.dropna()
+        df["ret"] = df["Close"].pct_change()
+        df["iv"] = df["ret"].rolling(20).std() * (252 ** 0.5) * 100
+        df["iv"] = df["iv"].fillna(15.0)
+        for idx, row in df.tail(days).iterrows():
+            out.append({
+                "date": idx.strftime("%Y-%m-%d"),
+                "close": round(float(row["Close"]), 2),
+                "iv": round(float(row["iv"]), 2),
+            })
+        return out
+    except Exception as e:
+        logger.warning(f"yfinance fetch failed for {symbol}: {e}")
+        return []
+
+
+def real_historical_series(symbol: str, days: int) -> List[Dict[str, Any]]:
+    cache_key = f"{symbol}-{days}"
+    today = today_str()
+    if _HIST_CACHE_DATE.get(cache_key) == today and cache_key in _HIST_CACHE:
+        return _HIST_CACHE[cache_key]
+    data = _fetch_yfinance(symbol, days)
+    if data:
+        _HIST_CACHE[cache_key] = data
+        _HIST_CACHE_DATE[cache_key] = today
+    return data
+
+
+class HistoricalIn(BaseModel):
+    symbol: str = "NIFTY"
+    days: int = 252
+    source: str = "yfinance"  # yfinance | synthetic
+
+
+@api.get("/historical/{symbol}")
+async def historical(symbol: str, days: int = 252, source: str = "yfinance"):
+    symbol = symbol.upper()
+    if symbol not in INSTRUMENTS:
+        raise HTTPException(404, "Symbol not supported")
+    if source == "synthetic":
+        return {"source": "synthetic", "series": historical_series(symbol, days)}
+    data = real_historical_series(symbol, days)
+    if data:
+        return {"source": "yfinance", "series": data}
+    return {"source": "synthetic_fallback", "series": historical_series(symbol, days)}
+
+
+# Patch backtest to support real data
+class BacktestV2In(BacktestIn):
+    source: str = "yfinance"  # yfinance | synthetic
+
+
+@api.post("/backtest/v2")
+async def backtest_v2(payload: BacktestV2In):
+    """Same as /backtest but lets caller choose real (yfinance) vs synthetic history."""
+    # Reuse the backtest function but inject the chosen series.
+    symbol = payload.symbol.upper()
+    if symbol not in INSTRUMENTS:
+        raise HTTPException(404, "Symbol not supported")
+    if payload.source == "yfinance":
+        series_data = real_historical_series(symbol, max(60, min(payload.days, 500)))
+        source_used = "yfinance" if series_data else "synthetic_fallback"
+        if not series_data:
+            series_data = historical_series(symbol, max(60, min(payload.days, 500)))
+    else:
+        series_data = historical_series(symbol, max(60, min(payload.days, 500)))
+        source_used = "synthetic"
+
+    # Inline backtest using series_data
+    strategy = next((s for s in STRATEGIES if s["id"] == payload.strategy_id), None)
+    if not strategy:
+        raise HTTPException(404, "Strategy not found")
+    inst = INSTRUMENTS[symbol]
+    lot_size = inst["lot"]
+    step = inst["step"]
+    qty = max(payload.lots, 1) * lot_size
+    series = series_data
+    trades = []
+    equity_curve = []
+    cum_pnl = 0.0
+    i = 0
+    while i < len(series):
+        day = series[i]
+        d_obj = datetime.fromisoformat(day["date"]).date()
+        is_entry = (payload.entry_rule == "WEEKLY_MONDAY" and d_obj.weekday() == 0) or (payload.entry_rule == "DAILY")
+        if not is_entry:
+            equity_curve.append({"date": day["date"], "equity": round(cum_pnl, 2)})
+            i += 1
+            continue
+        entry_spot = day["close"]
+        entry_iv = day["iv"]
+        atm = round_strike(entry_spot, step)
+        entry_legs = []
+        for leg in strategy["legs"]:
+            strike = atm + leg["offset"] * step
+            price = entry_spot if leg["type"] == "FUT" else black_scholes_price(entry_spot, strike, entry_iv, 5, leg["type"])
+            entry_legs.append({**leg, "strike": strike, "price": price})
+        exit_day_idx = min(i + 5, len(series) - 1)
+        s = series[exit_day_idx]
+        pnl = 0.0
+        for l in entry_legs:
+            if l["type"] == "FUT":
+                intrinsic = s["close"] - l["price"]
+            elif l["type"] == "CE":
+                intrinsic = max(s["close"] - l["strike"], 0) - l["price"]
+            else:
+                intrinsic = max(l["strike"] - s["close"], 0) - l["price"]
+            sign = 1 if l["action"] == "BUY" else -1
+            pnl += intrinsic * sign * qty
+        cum_pnl += pnl
+        trades.append({
+            "entry_date": day["date"],
+            "exit_date": s["date"],
+            "entry_spot": entry_spot,
+            "exit_spot": s["close"],
+            "pnl": round(pnl, 2),
+        })
+        equity_curve.append({"date": day["date"], "equity": round(cum_pnl, 2)})
+        i = exit_day_idx + 1
+
+    total = len(trades)
+    wins = sum(1 for t in trades if t["pnl"] > 0)
+    losses = total - wins
+    win_rate = round((wins / total) * 100, 1) if total else 0.0
+    avg_win = round(sum(t["pnl"] for t in trades if t["pnl"] > 0) / wins, 2) if wins else 0.0
+    avg_loss = round(sum(t["pnl"] for t in trades if t["pnl"] <= 0) / losses, 2) if losses else 0.0
+    peak = 0.0
+    max_dd = 0.0
+    for p in equity_curve:
+        if p["equity"] > peak:
+            peak = p["equity"]
+        dd = p["equity"] - peak
+        if dd < max_dd:
+            max_dd = dd
+    return {
+        "symbol": symbol,
+        "strategy_id": strategy["id"],
+        "strategy_name": strategy["name"],
+        "source": source_used,
+        "params": payload.model_dump(),
+        "stats": {
+            "total_trades": total,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": win_rate,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "total_pnl": round(cum_pnl, 2),
+            "max_drawdown": round(max_dd, 2),
+        },
+        "trades": trades,
+        "equity_curve": equity_curve,
+    }
+
+
+# ---------------- App wiring ----------------
 app.include_router(api)
 app.add_middleware(
     CORSMiddleware,

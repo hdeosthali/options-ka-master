@@ -82,6 +82,53 @@ export const api = {
       }),
     }),
   checkoutUrl: (order_id: string) => `${API}/payments/checkout/${order_id}`,
+  // Iteration 3
+  mirrorBroker: (username: string, trade_id: string) =>
+    request<MirrorResultT>("/broker/mirror", {
+      method: "POST",
+      body: JSON.stringify({ username, trade_id }),
+    }),
+  registerPushToken: (username: string, push_token: string, platform: string) =>
+    request<{ registered: boolean }>("/notifications/register", {
+      method: "POST",
+      body: JSON.stringify({ username, push_token, platform }),
+    }),
+  listAlerts: (username: string) => request<AlertT[]>(`/notifications/${username}`),
+  triggerStrategyAlert: (username: string) =>
+    request<{ alert: AlertT; push: any }>(`/notifications/${username}/strategy-alert`, { method: "POST" }),
+  historical: (symbol: string, days: number, source: "yfinance" | "synthetic" = "yfinance") =>
+    request<{ source: string; series: { date: string; close: number; iv: number }[] }>(
+      `/historical/${symbol}?days=${days}&source=${source}`
+    ),
+  backtestV2: (params: BacktestParamsT & { source: "yfinance" | "synthetic" }) =>
+    request<BacktestResultT & { source: string }>("/backtest/v2", {
+      method: "POST",
+      body: JSON.stringify(params),
+    }),
+  createSubscription: (username: string) =>
+    request<{ subscription_id: string; plan_id: string; key_id: string; amount_paise: number }>(
+      "/payments/create-subscription",
+      { method: "POST", body: JSON.stringify({ username }) }
+    ),
+};
+
+export type MirrorResultT = {
+  mirrored: boolean;
+  already_mirrored?: boolean;
+  broker: string;
+  using_real_broker: boolean;
+  orders: { order_id: string; status: string; broker: string }[];
+  message: string;
+};
+
+export type AlertT = {
+  id: string;
+  username: string;
+  title: string;
+  body: string;
+  data: Record<string, any>;
+  created_at: string;
+  read: boolean;
 };
 
 // ---- Session ----
