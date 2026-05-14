@@ -110,6 +110,42 @@ export const api = {
       "/payments/create-subscription",
       { method: "POST", body: JSON.stringify({ username }) }
     ),
+  // Iteration 4 — custom strategies
+  createCustomStrategy: (payload: {
+    username: string;
+    name: string;
+    category?: string;
+    tagline?: string;
+    description?: string;
+    legs: { action: string; type: string; offset: number }[];
+  }) =>
+    request<StrategyT & { is_custom?: boolean }>("/strategies/custom", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  listCustomStrategies: (username: string) =>
+    request<(StrategyT & { is_custom?: boolean })[]>(`/strategies/custom/${username}`),
+  deleteCustomStrategy: (strategy_id: string, username: string) =>
+    request<{ deleted: boolean }>(`/strategies/custom/${strategy_id}?username=${username}`, {
+      method: "DELETE",
+    }),
+  // Greeks / Payoff with optional username (custom strategies)
+  greeksFor: (strategy_id: string, symbol: string, lots: number, username?: string) =>
+    request<GreeksResultT>("/greeks", {
+      method: "POST",
+      body: JSON.stringify({ strategy_id, symbol, lots, username }),
+    }),
+  payoffFor: (strategy_id: string, symbol: string, lots: number, username?: string) =>
+    request<PayoffResultT>("/payoff", {
+      method: "POST",
+      body: JSON.stringify({ strategy_id, symbol, lots, username }),
+    }),
+  // WebSocket URL helper
+  chainWsUrl: (symbol: string) => {
+    const httpBase = process.env.EXPO_PUBLIC_BACKEND_URL || "";
+    const wsBase = httpBase.replace(/^http/, "ws");
+    return `${wsBase}/api/ws/chain/${symbol}`;
+  },
 };
 
 export type MirrorResultT = {

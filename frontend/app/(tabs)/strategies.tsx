@@ -46,8 +46,12 @@ export default function Strategies() {
   useEffect(() => {
     (async () => {
       try {
-        const data = await api.strategies();
-        setStrategies(data);
+        const u = await session.get();
+        const [builtIn, custom] = await Promise.all([
+          api.strategies(),
+          u ? api.listCustomStrategies(u) : Promise.resolve([] as any),
+        ]);
+        setStrategies([...builtIn, ...custom]);
       } catch (e: any) {
         Alert.alert("Error", e.message);
       } finally {
@@ -67,9 +71,10 @@ export default function Strategies() {
     setAnalysisLoading(true);
     (async () => {
       try {
+        const u = await session.get();
         const [g, p] = await Promise.all([
-          api.greeks(selected.id, symbol, lots),
-          api.payoff(selected.id, symbol, lots),
+          api.greeksFor(selected.id, symbol, lots, u || undefined),
+          api.payoffFor(selected.id, symbol, lots, u || undefined),
         ]);
         if (!cancelled) {
           setGreeks(g);
@@ -119,8 +124,17 @@ export default function Strategies() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.title}>Strategy Hub</Text>
-        <Text style={styles.subtitle}>{strategies.length} pre-built strategies</Text>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.title}>Strategy Hub</Text>
+          <Text style={styles.subtitle}>{strategies.length} strategies · tap any to apply</Text>
+        </View>
+        <TouchableOpacity
+          testID="open-editor-btn"
+          style={styles.newBtn}
+          onPress={() => router.push("/editor")}
+        >
+          <Text style={styles.newBtnText}>+ New</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView
@@ -154,7 +168,14 @@ export default function Strategies() {
               onPress={() => setSelected(s)}
             >
               <View style={styles.cardHeader}>
-                <Text style={styles.cardName}>{s.name}</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1 }}>
+                  <Text style={styles.cardName}>{s.name}</Text>
+                  {(s as any).is_custom && (
+                    <View style={styles.customBadge}>
+                      <Text style={styles.customBadgeText}>CUSTOM</Text>
+                    </View>
+                  )}
+                </View>
                 <View
                   style={[
                     styles.catPill,
@@ -375,9 +396,25 @@ const GreekBox = ({ label, value, hint }: { label: string; value: string; hint: 
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.colors.bg },
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12 },
+  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 12, flexDirection: "row", alignItems: "center", gap: 10 },
   title: { color: theme.colors.textPrimary, fontSize: 28, fontWeight: "800", letterSpacing: -0.5 },
   subtitle: { color: theme.colors.textTertiary, fontSize: 13, marginTop: 4 },
+  newBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: theme.colors.brand,
+    borderRadius: 10,
+  },
+  newBtnText: { color: "#fff", fontWeight: "700", fontSize: 13 },
+  customBadge: {
+    backgroundColor: "rgba(245,158,11,0.15)",
+    borderColor: theme.colors.accent,
+    borderWidth: 1,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  customBadgeText: { color: theme.colors.accent, fontSize: 9, fontWeight: "800", letterSpacing: 0.5 },
   catRow: { paddingHorizontal: 16, gap: 8, paddingVertical: 4 },
   catChip: {
     paddingHorizontal: 14,

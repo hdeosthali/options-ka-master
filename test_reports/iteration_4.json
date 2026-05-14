@@ -1,0 +1,66 @@
+{
+  "summary": "Iteration 4 backend: 21/23 pass (one test was my incorrect assumption — see notes; one is a REAL backend bug). Two CRITICAL gaps: (1) Backend POST /api/trades/apply does NOT support custom strategies — only iterates built-in STRATEGIES list and ignores payload.username, returns 404 'Strategy not found' for any custom_* id. (2) Frontend app/(tabs)/chain.tsx has NO WebSocket implementation at all — still uses 15-second setInterval polling on line 38, and the LIVE/POLLING badge is completely absent from the rendered header (styles for liveBadge/liveDot/liveText are defined but never used). Custom-strategy CRUD, validation (400s), WS endpoint at /api/ws/chain/{symbol}, Greeks/Payoff with username resolution, and all iter1/2/3 regression endpoints pass. Editor screen source code looks correct (legs 1-6, BUY/SELL & CE/PE/FUT toggles, preview creates temp + cleans up, save → /(tabs)/strategies). Strategies tab source has +New button, CUSTOM badge, and passes username to greeks/payoff.",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "POST /api/trades/apply",
+        "issue": "Does not resolve custom strategies. apply_strategy() at server.py line 535 only does `next((s for s in STRATEGIES if s.id == payload.strategy_id), None)` — never checks db.custom_strategies. Passing a custom_xxxxxxxxxx id returns 404 'Strategy not found'. Fix: replace that lookup with `strategy = await find_strategy(payload.strategy_id, payload.username)` (helper already exists at line 1638). Also persist `strategy_name` correctly (use strategy['name']).",
+        "priority": "CRITICAL"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "POST /api/greeks and /api/payoff",
+        "issue": "find_strategy() with username=None queries `db.custom_strategies.find_one({'id': strategy_id})` WITHOUT username filter, so anyone who knows a custom_xxxxxxxxxx id can fetch greeks/payoff for another user's strategy. Minor info leak. Consider requiring username when strategy_id startswith 'custom_'."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/(tabs)/chain.tsx",
+        "issue": "Iter 4 WebSocket feature is NOT IMPLEMENTED. File still imports only from '../../src/api' (no WS code), uses `setInterval(load, 15000)` on line 38, never opens ws://.../api/ws/chain/{symbol}. The header has no <View> rendering liveBadge/liveDot/liveText even though those styles are declared (lines 121-132) — dead CSS. Acceptance criteria 'Chain tab shows LIVE/POLLING badge' fails. Implementation required: useWebSocket hook that connects to `${EXPO_PUBLIC_BACKEND_URL.replace('https','wss')}/api/ws/chain/${symbol}`, handles onopen→set status 'LIVE', onerror/onclose→fall back to setInterval polling and set status 'POLLING', render badge in header.",
+        "testID": "chain-live-badge (does not exist)",
+        "priority": "CRITICAL"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Apply custom strategy from Strategies tab",
+        "issue": "Even though strategies.tsx renders custom strategies and 'Place Paper Trade' calls api.applyStrategy(u, selected.id, ...), the backend will reject every custom strategy id with 404 because of the apply_strategy bug above. End-to-end flow is broken.",
+        "affected_testIDs": ["apply-strategy-btn", "strategy-card-custom_*"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iteration4.py",
+    "/app/test_reports/pytest/pytest_iteration4.xml"
+  ],
+  "action_items": [
+    "Backend FIX (CRITICAL): in server.py apply_strategy (line ~535), replace `strategy = next((s for s in STRATEGIES ...), None)` with `strategy = await find_strategy(payload.strategy_id, payload.username)`. This unblocks the entire Custom Strategy feature.",
+    "Frontend FIX (CRITICAL): implement WebSocket consumer in app/(tabs)/chain.tsx — connect to wss://.../api/ws/chain/{symbol}, parse {type:'chain', data:...} messages, update chain state, render <View testID='chain-live-badge'> in header with green dot+LIVE on success, gray dot+POLLING on failure/fallback. Keep polling as fallback only.",
+    "(Minor) tighten find_strategy: require username when id starts with 'custom_' to avoid cross-user data access.",
+    "Re-run /app/backend/tests/test_iteration4.py after fixes; expect 22/23 pass (the test_greeks_custom_without_username_404 assertion is a security-tightening item, not strictly required by the iter4 spec)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is now ~1740 lines — strongly recommend splitting into routers (custom_strategies, ws, payments, market, trades, broker, notifications).",
+    "WebSocket endpoint correctly handles invalid symbol (close 4404) and disconnect; loops every 2s as spec'd — verified by direct connection.",
+    "chain.tsx has unused liveBadge/liveDot/liveText styles indicating partial work — looks like the feature was started server-side but never wired into the React Native component.",
+    "Editor.tsx — refreshPreview creates a temp custom strategy then deletes it; works but is wasteful. A dedicated POST /api/payoff/preview that accepts inline legs (no DB write) would be cleaner.",
+    "apply_strategy stores strategy_name from STRATEGIES match — even after fix, ensure strategy.get('name') is read from the resolved (possibly custom) dict, not from a hard-coded built-in."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iteration4.py (new)"
+  ],
+  "success_rate": {
+    "backend": "91% (21/23) — 1 real bug (apply_strategy for custom), 1 test assertion mine (no-username greeks lookup)",
+    "frontend": "Cannot verify via Playwright due to backend trade-apply bug + missing WS — chain WS feature confirmed absent in source"
+  },
+  "seed_data_creation": "Created user `itr4<6hex>` via /api/auth/login. Created 2 TEST_ custom strategies; deleted one in test cleanup; other remains in db.custom_strategies. One placed trade for iron_condor on this user.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "After main agent fixes (1) apply_strategy to use find_strategy(payload.strategy_id, payload.username) and (2) implements WS consumer in chain.tsx with LIVE/POLLING badge: re-run /app/backend/tests/test_iteration4.py (expect TestCustomStrategies::test_apply_custom_trade to pass), then open mobile preview, log in as any username≥3 chars, go to Strategies tab, verify '+ New' button → /editor, build a 3-leg strategy, Preview Payoff renders chart + tiles, Save returns to Strategies with CUSTOM badge, tap the custom card → modal shows Greeks + Payoff, tap Place Paper Trade succeeds. For Chain: open Chain tab, look for badge testID='chain-live-badge' with text 'LIVE' (green) or 'POLLING' (gray); on web preview the ingress may not proxy WSS so 'POLLING' is acceptable per spec.",
+  "rca_of_issue": "RCA #1 (apply_strategy): when iter4 was added, find_strategy() helper and CreateCustomIn model were added (lines 1622-1698) and Greeks/Payoff endpoints were updated to call await find_strategy(...). However the older apply_strategy endpoint at line 535 was NOT migrated — it still uses the inline `next(... in STRATEGIES)` lookup written in iter1. ApplyStrategyIn HAS username field already, so backend fix is one line. RCA #2 (chain WS): the backend WS route exists and works (verified by `websockets.connect` returning 2 valid chain messages within 5s and INVALID symbol closing with 4404). The frontend chain.tsx file was never edited for iter4 — only styles (liveBadge etc) were added but no WebSocket logic, no badge rendering, no fallback handler. Reproduction: open /app/frontend/app/(tabs)/chain.tsx — search 'WebSocket' or 'ws://' → zero matches; search 'POLLING' → zero matches in JSX."
+}

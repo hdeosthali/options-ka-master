@@ -117,7 +117,19 @@ export default function Chain() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: theme.colors.bg },
-  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8 },
+  header: { paddingHorizontal: 20, paddingTop: 8, paddingBottom: 8, flexDirection: "row", alignItems: "center", gap: 10 },
+  liveBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  liveDot: { width: 6, height: 6, borderRadius: 999 },
+  liveText: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   title: { color: theme.colors.textPrimary, fontSize: 28, fontWeight: "800", letterSpacing: -0.5 },
   subtitle: { color: theme.colors.textTertiary, fontSize: 12, marginTop: 4 },
   symRow: { flexDirection: "row", paddingHorizontal: 16, gap: 8, marginVertical: 12 },
@@ -175,3 +187,4 @@ const styles = StyleSheet.create({
   strikeText: { color: theme.colors.textPrimary, fontSize: 14, fontWeight: "700" },
   atmTag: { color: theme.colors.accent, fontSize: 9, fontWeight: "800", marginTop: 2, letterSpacing: 0.5 },
 });
+

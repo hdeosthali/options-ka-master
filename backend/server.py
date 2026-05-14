@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Request
+from fastapi import FastAPI, APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -303,7 +303,6 @@ class ApplyStrategyIn(BaseModel):
     strategy_id: str
     symbol: str = "NIFTY"
     lots: int = 1
-
 
 class CloseTradeIn(BaseModel):
     username: str
@@ -666,11 +665,12 @@ class GreeksIn(BaseModel):
     symbol: str = "NIFTY"
     strategy_id: str
     lots: int = 1
+    username: Optional[str] = None
 
 
 @api.post("/greeks")
 async def greeks_for_strategy(payload: GreeksIn):
-    strategy = next((s for s in STRATEGIES if s["id"] == payload.strategy_id), None)
+    strategy = await find_strategy(payload.strategy_id, payload.username)
     if not strategy:
         raise HTTPException(404, "Strategy not found")
     symbol = payload.symbol.upper()
@@ -734,7 +734,7 @@ def leg_payoff_at_expiry(action: str, opt_type: str, strike: int, entry_price: f
 
 @api.post("/payoff")
 async def payoff(payload: GreeksIn):
-    strategy = next((s for s in STRATEGIES if s["id"] == payload.strategy_id), None)
+    strategy = await find_strategy(payload.strategy_id, payload.username)
     if not strategy:
         raise HTTPException(404, "Strategy not found")
     symbol = payload.symbol.upper()
@@ -1617,6 +1617,109 @@ async def backtest_v2(payload: BacktestV2In):
         "trades": trades,
         "equity_curve": equity_curve,
     }
+
+
+# ---------------- Custom Strategies ----------------
+class CustomLegIn(BaseModel):
+    action: str  # BUY | SELL
+    type: str    # CE | PE | FUT
+    offset: int  # in strike steps from ATM (use 0 for FUT)
+
+
+class CreateCustomIn(BaseModel):
+    username: str
+    name: str
+    category: str = "Custom"
+    tagline: str = "User-defined multi-leg strategy"
+    description: Optional[str] = ""
+    legs: List[CustomLegIn]
+
+
+async def find_strategy(strategy_id: str, username: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    built_in = next((s for s in STRATEGIES if s["id"] == strategy_id), None)
+    if built_in:
+        return built_in
+    query: Dict[str, Any] = {"id": strategy_id}
+    if username:
+        query["username"] = username.lower()
+    custom = await db.custom_strategies.find_one(query, {"_id": 0})
+    return custom
+
+
+@api.post("/strategies/custom")
+async def create_custom_strategy(payload: CreateCustomIn):
+    username = payload.username.lower()
+    user = await db.users.find_one({"username": username}, {"_id": 0})
+    if not user:
+        raise HTTPException(404, "User not found")
+    if not payload.legs:
+        raise HTTPException(400, "At least one leg is required")
+    if len(payload.legs) > 6:
+        raise HTTPException(400, "Maximum 6 legs allowed")
+    name = payload.name.strip() or "My Strategy"
+    legs_out = []
+    for leg in payload.legs:
+        action = leg.action.upper()
+        otype = leg.type.upper()
+        if action not in ("BUY", "SELL"):
+            raise HTTPException(400, f"Invalid action: {leg.action}")
+        if otype not in ("CE", "PE", "FUT"):
+            raise HTTPException(400, f"Invalid type: {leg.type}")
+        legs_out.append({"action": action, "type": otype, "offset": int(leg.offset)})
+    doc = {
+        "id": f"custom_{uuid.uuid4().hex[:10]}",
+        "username": username,
+        "name": name,
+        "category": payload.category or "Custom",
+        "tagline": payload.tagline or "User-defined multi-leg strategy",
+        "description": payload.description or "",
+        "risk": "User-defined",
+        "reward": "User-defined",
+        "best_regime": "ANY",
+        "legs": legs_out,
+        "is_custom": True,
+        "created_at": now_iso(),
+    }
+    await db.custom_strategies.insert_one(doc.copy())
+    return {k: v for k, v in doc.items() if k != "_id"}
+
+
+@api.get("/strategies/custom/{username}")
+async def list_custom_strategies(username: str):
+    cursor = db.custom_strategies.find({"username": username.lower()}, {"_id": 0}).sort("created_at", -1)
+    return await cursor.to_list(100)
+
+
+@api.delete("/strategies/custom/{strategy_id}")
+async def delete_custom_strategy(strategy_id: str, username: str):
+    res = await db.custom_strategies.delete_one({"id": strategy_id, "username": username.lower()})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Custom strategy not found")
+    return {"deleted": True}
+
+
+# ---------------- WebSocket — Live Option Chain ----------------
+@app.websocket("/api/ws/chain/{symbol}")
+async def ws_option_chain(websocket: WebSocket, symbol: str):
+    symbol = symbol.upper()
+    if symbol not in INSTRUMENTS:
+        await websocket.close(code=4404)
+        return
+    await websocket.accept()
+    try:
+        # Push immediately, then every 2 seconds
+        while True:
+            chain = get_option_chain(symbol)
+            await websocket.send_json({"type": "chain", "data": chain, "ts": now_iso()})
+            await asyncio.sleep(2)
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        logger.warning(f"WS chain error for {symbol}: {e}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 # ---------------- App wiring ----------------
